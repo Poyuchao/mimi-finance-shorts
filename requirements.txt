@@ -1,0 +1,14 @@
+feedparser          # 抓 RSS（自動解 gzip）
+requests            # 風傳媒需帶 UA
+beautifulsoup4      # 剝 description 的 HTML
+openai              # LLM
+edge-tts            # TTS
+jinja2              # HTML 模板
+playwright          # 字卡截圖
+moviepy             # 影片合成
+python-dotenv       # 讀 env
+google-api-python-client    # YouTube Data API v3 上傳
+google-auth-oauthlib        # OAuth 2.0 授權
+google-auth-httplib2        # google auth transport
+google-genai                # Gemini 圖像生成 + 審圖(UPDATE 4/5)
+SQLAlchemy                  # 資料庫記錄(UPDATE 6)

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block style %}
+  .outro-mid { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+  .cta { font-size: 96px; font-weight: 900; line-height: 1.2; }
+  .cta .accent { color: var(--accent); }
+  .sub { margin-top: 40px; font-size: 46px; color: var(--text); font-weight: 700; }
+  .sources {
+    margin-top: 70px; font-size: 38px; color: var(--muted); line-height: 1.6;
+    border-top: 2px solid var(--line); padding-top: 40px;
+  }
+  .hashtags { margin-top: 30px; font-size: 34px; color: var(--accent); }
+  .footer { font-size: 34px; color: var(--muted); letter-spacing: 2px; }
+{% endblock %}
+{% block content %}
+  <div class="brand"><span class="dot"></span>每日股市速報</div>
+  <div class="outro-mid">
+    <div class="cta">記得<span class="accent">{{ cta }}</span><br>掌握每日盤勢</div>
+    <div class="sub">每天 60 秒，看懂台股與美股</div>
+    <div class="sources">本集來源：{{ sources }}</div>
+    {% if hashtags %}<div class="hashtags">{{ hashtags }}</div>{% endif %}
+  </div>
+  <div class="footer">投資有風險，內容僅供參考</div>
+{% endblock %}

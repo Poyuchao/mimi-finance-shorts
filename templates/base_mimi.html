@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --bg1: #0b1220;
+    --bg2: #12203c;
+    --accent: #f5c542;
+    --up: #ff4d4d;
+    --down: #1fd177;
+    --text: #ffffff;
+    --muted: #9fb0c8;
+    --line: rgba(255,255,255,0.10);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* ★ 透明背景:合成時米米動畫從上半透出來 */
+  html, body {
+    width: 1080px; height: 1920px;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif;
+    color: var(--text);
+    background: transparent;
+    overflow: hidden;
+  }
+  .frame { width: 1080px; height: 1920px; display: flex; flex-direction: column; }
+
+  /* 上半:透明(留給米米)+ 頂部識別條 + 說話泡泡 */
+  .upper { position: relative; width: 100%; }
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 60px 70px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; font-size: 40px; font-weight: 800; letter-spacing: 1px;
+           text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+  .brand .cat { font-size: 46px; }
+  .seq { font-size: 44px; font-weight: 900; color: var(--accent); text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+  .seq span { color: #fff; font-size: 32px; }
+
+  /* 說話泡泡:靠上半下緣,尖角朝上指向米米 */
+  .bubble {
+    position: absolute; left: 60px; bottom: 60px; max-width: 620px;
+    background: rgba(255,255,255,0.95); color: #16233a;
+    font-size: 44px; font-weight: 800; line-height: 1.35;
+    padding: 30px 40px; border-radius: 32px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  }
+  .bubble::before {
+    content: ""; position: absolute; top: -26px; left: 80px;
+    border: 18px solid transparent; border-bottom-color: rgba(255,255,255,0.95);
+  }
+
+  /* 下半:深藍底(自己的背景),放資訊 */
+  .lower {
+    flex: 1; min-height: 0;
+    background: linear-gradient(180deg, #12203c 0%, #0b1220 100%);
+    border-top: 4px solid var(--accent);
+    border-radius: 44px 44px 0 0;
+    padding: 56px 70px;
+    display: flex; flex-direction: column;
+  }
+  {% block style %}{% endblock %}
+</style>
+</head>
+<body>
+  <div class="frame">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

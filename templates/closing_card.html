@@ -1,0 +1,20 @@
+{% extends "base_mimi.html" %}
+{% block style %}
+  .lower { justify-content: center; }
+  .cta { font-size: 84px; font-weight: 900; line-height: 1.2; }
+  .cta .accent { color: var(--accent); }
+  .sub { margin-top: 22px; font-size: 40px; color: var(--muted); }
+  .sources { margin-top: 46px; font-size: 34px; color: var(--muted); line-height: 1.5;
+             border-top: 2px solid var(--line); padding-top: 30px; }
+{% endblock %}
+{% block content %}
+  <div class="upper" style="height: {{ area_ratio }}%;">
+    <div class="topbar"><div class="brand"><span class="cat">🐱</span> 米米財經</div></div>
+    {% if bubble %}<div class="bubble">{{ bubble }}</div>{% endif %}
+  </div>
+  <div class="lower">
+    <div class="cta">記得<span class="accent">追蹤</span>米米財經</div>
+    <div class="sub">{{ slogan }}</div>
+    <div class="sources">本集來源：{{ sources }}</div>
+  </div>
+{% endblock %}

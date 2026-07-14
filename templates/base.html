@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --bg1: #0b1220;
+    --bg2: #12203c;
+    --accent: #f5c542;      /* 金色重點 */
+    --up: #ff4d4d;          /* 台股習慣:紅漲 */
+    --down: #1fd177;        /* 綠跌 */
+    --text: #ffffff;
+    --muted: #9fb0c8;
+    --card: rgba(255,255,255,0.04);
+    --line: rgba(255,255,255,0.10);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1080px; height: 1920px;
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif;
+    color: var(--text);
+    background: radial-gradient(120% 80% at 50% 0%, var(--bg2) 0%, var(--bg1) 60%);
+    overflow: hidden;
+  }
+  .frame {
+    width: 1080px; height: 1920px;
+    padding: 90px 80px;
+    display: flex; flex-direction: column;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 16px;
+    font-size: 34px; font-weight: 700; letter-spacing: 2px;
+  }
+  .brand .dot { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); }
+  .brand .muted { color: var(--muted); font-weight: 400; }
+  {% block style %}{% endblock %}
+</style>
+</head>
+<body>
+  <div class="frame">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

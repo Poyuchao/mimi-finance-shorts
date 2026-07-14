@@ -1,0 +1,27 @@
+# env / secrets
+.env
+client_secrets.json
+client_secrets.json.json
+token.json
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# 產出
+output/
+# 每次 pipeline 自動產生的中間檔
+output_llm.json
+
+# 資料庫(UPDATE 6)
+mimi.db
+
+# 重複/未使用的素材(本機留著,不進版控)
+# = intro.mp4 的原檔(重複)
+assets/mimi/米米開場.mp4
+# = outro.mp4 的原檔(重複)
+assets/mimi/米米收尾.mp4
+# UPDATE 2 後已不使用的舊素材(根目錄的 mimi/米米眨眼.mp4)
+# ★ 開頭要加 / ,否則會連 assets/mimi/ 一起排除掉!
+/mimi/

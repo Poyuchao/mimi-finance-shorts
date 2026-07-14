@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block style %}
+  .top { display: flex; justify-content: space-between; align-items: center; }
+  .source { font-size: 32px; color: var(--muted); border: 2px solid var(--line);
+            padding: 10px 26px; border-radius: 999px; }
+  .seq { font-size: 40px; font-weight: 900; color: var(--accent); letter-spacing: 2px; }
+  .seq .total { color: var(--muted); font-size: 30px; }
+
+  /* 🆕 UPDATE 4:AI 示意圖(上半);無圖時整段不顯示,退回純字卡 */
+  /* ★ 防呆:限制最大高度 + contain —— 萬一 AI 回了直式/怪比例的圖,
+     最多是圖縮小留白,絕不會撐爆卡片把下面的字幕擠出去。 */
+  .newsimg { margin-top: 26px; width: 100%; max-height: 660px; object-fit: contain;
+             border-radius: 28px; display: block; border: 1px solid var(--line); }
+
+  .headline { margin-top: 60px; font-size: 84px; font-weight: 900; line-height: 1.18; }
+
+  /* 數字視覺化區(台股慣例 紅漲▲/綠跌▼/中性白) */
+  .numbox {
+    margin-top: 70px; align-self: flex-start;
+    display: flex; align-items: baseline; gap: 24px;
+    background: rgba(255,255,255,0.05); border: 2px solid var(--line);
+    border-radius: 32px; padding: 40px 56px;
+  }
+  .numbox .num { font-size: 150px; font-weight: 900; line-height: 1; letter-spacing: 1px; }
+  .numbox .arrow { font-size: 96px; font-weight: 900; }
+  .numbox.up   .num, .numbox.up   .arrow { color: var(--up); }    /* 紅漲 */
+  .numbox.down .num, .numbox.down .arrow { color: var(--down); }  /* 綠跌 */
+  .numbox.flat .num { color: var(--text); }
+  .numlabel { margin-top: 30px; font-size: 46px; font-weight: 700; color: var(--muted); }
+
+  .script {
+    margin-top: 70px; font-size: 42px; line-height: 1.6; color: var(--text);
+    border-left: 6px solid var(--accent); padding-left: 30px;
+  }
+
+  /* 有圖版:字級縮小,騰空間給圖 */
+  .headline.sm { margin-top: 34px; font-size: 60px; }
+  .numlabel.sm { margin-top: 30px; font-size: 40px; color: var(--accent); font-weight: 800; }
+  .script.sm { margin-top: 30px; font-size: 38px; }
+{% endblock %}
+{% block content %}
+  <div class="top">
+    <div class="brand"><span class="dot"></span>🐱 米米財經</div>
+    <div class="seq">{{ index }} <span class="total">/ {{ total }}</span></div>
+  </div>
+
+  {% if image_data %}
+    {# 有圖版:來源 → 標題 → 圖 → label 小字 → 字幕(不放大數字框) #}
+    <div class="top" style="margin-top:30px;">
+      <div class="source">來源：{{ source }}</div>
+    </div>
+    <div class="headline sm">{{ headline }}</div>
+    <img class="newsimg" src="{{ image_data }}" alt="">
+    {% if highlight and highlight.label %}<div class="numlabel sm">{{ highlight.label }}</div>{% endif %}
+    {% if script %}<div class="script sm">{{ script }}</div>{% endif %}
+
+  {% else %}
+    {# 無圖版(fallback):純字卡 + 放大數字視覺化 #}
+    <div class="top" style="margin-top:30px;">
+      <div class="source">來源：{{ source }}</div>
+    </div>
+    <div class="headline">{{ headline }}</div>
+    {% if highlight and highlight.value %}
+    <div class="numbox {{ highlight.trend }}">
+      <span class="num">{{ highlight.value }}</span>
+      {% if highlight.trend == 'up' %}<span class="arrow">▲</span>
+      {% elif highlight.trend == 'down' %}<span class="arrow">▼</span>{% endif %}
+    </div>
+    {% if highlight.label %}<div class="numlabel">{{ highlight.label }}</div>{% endif %}
+    {% endif %}
+    {% if script %}<div class="script">{{ script }}</div>{% endif %}
+  {% endif %}
+{% endblock %}
