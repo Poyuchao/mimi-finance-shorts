@@ -113,3 +113,8 @@ REVIEW_TIMEOUT   = 60            # 單次審圖逾時(秒);逾時視為「不通
 # ── 資料庫記錄(UPDATE 6) ─────────────────────────
 # 記錄每次執行的「候選 ~10 篇 + LLM 選中的 3 篇 + 理由」→ 事後驗證選片品質
 DB_URL = "sqlite:///mimi.db"     # 本機;上雲(UPDATE 7)改持久化連線,models/repository 不動
+
+# ── MCP(UPDATE 8) ───────────────────────────────
+# 把「抓新聞 + 查歷史選片」以 MCP 協議暴露成 tools 給選片 agent
+USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 6 現狀)
+DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考,不強制去重)

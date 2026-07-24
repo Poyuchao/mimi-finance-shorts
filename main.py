@@ -4,6 +4,7 @@ r"""串整條 pipeline:抓 RSS → 篩股市 → 候選 → LLM 選片 → LLM �
 跑法:  .\venv\Scripts\python.exe main.py
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -19,6 +20,7 @@ import card_render
 import config
 import fetch_rss
 import image_service
+import mcp_client
 import parse_filter
 import select_news
 import tts
@@ -31,7 +33,7 @@ logger = logging.getLogger("main")
 
 
 def _step(n: int, msg: str) -> None:
-    total = 8 if config.UPLOAD_ENABLED else 7
+    total = 6 if config.UPLOAD_ENABLED else 5
     print(f"\n{'─' * 60}\n[{n}/{total}] {msg}\n{'─' * 60}")
 
 
@@ -39,27 +41,41 @@ def run(platform: str = "ig") -> str:
     t0 = time.time()
     init_db()   # 🆕 UPDATE 6:首次自動建表
 
-    _step(1, "抓 RSS(3 來源)")
-    entries = fetch_rss.fetch_rss()
-    if not entries:
-        raise RuntimeError("三來源都抓不到任何新聞,終止")
+    # ①②③ 🆕 UPDATE 8:優先走 MCP 取得候選池;失敗則 fallback 回直接呼叫
+    recent: list[dict] = []
+    candidates = None
+    if config.USE_MCP:
+        _step(1, "透過 MCP 取得候選池 + 歷史選片")
+        try:
+            candidates, recent = asyncio.run(
+                mcp_client.fetch_candidates_via_mcp(
+                    pool_size=config.NEWS_POOL, dedup_days=config.DEDUP_DAYS
+                )
+            )
+            print(f"  MCP:候選 {len(candidates)} 則、近 {config.DEDUP_DAYS} 天已發 {len(recent)} 則")
+        except Exception as exc:  # noqa: BLE001 — MCP 掛掉不能讓發片停擺
+            logger.warning("MCP 取得失敗,fallback 直接呼叫:%s", exc)
+            candidates = None
 
-    _step(2, "解析 + 篩股市 + 清洗")
-    stock_news = parse_filter.parse_filter(entries)
-    if not stock_news:
-        raise RuntimeError("篩不到任何股市新聞,終止(檢查關鍵字/來源)")
-
-    _step(3, "收斂候選池(去重 + 排序)")
-    candidates = select_news.select_news(stock_news)
+    if not candidates:
+        _step(1, "抓 RSS(3 來源)→ 篩股市 → 候選池(直接呼叫)")
+        entries = fetch_rss.fetch_rss()
+        if not entries:
+            raise RuntimeError("三來源都抓不到任何新聞,終止")
+        stock_news = parse_filter.parse_filter(entries)
+        if not stock_news:
+            raise RuntimeError("篩不到任何股市新聞,終止(檢查關鍵字/來源)")
+        candidates = select_news.select_news(stock_news)
 
     svc = OpenAIService()
 
-    _step(4, "LLM 第一步:選片(挑 3 則 + 理由)")
-    picked = svc.select_top_news(candidates)
+    _step(2, "LLM 第一步:選片(挑 3 則 + 理由)")
+    # 🆕 UPDATE 8:把「最近已發過的」帶進 prompt,讓 agent 避免重複報導
+    picked = svc.select_top_news(candidates, recent=recent)
     for rank, p in enumerate(picked, 1):
         print(f"  {rank}. [{p['source']}] {p['title']}  ← {p.get('reason','')}")
 
-    _step(5, "LLM 第二步:改寫口播稿")
+    _step(3, "LLM 第二步:改寫口播稿")
     llm_result = svc.rewrite_scripts(picked)
     print(f"  影片標題:{llm_result['video_title']}")
     with open("output_llm.json", "w", encoding="utf-8") as f:
@@ -77,7 +93,7 @@ def run(platform: str = "ig") -> str:
             item["image_path"] = None
         print("  USE_AI_IMAGE=False,三則都用純字卡")
 
-    _step(6, "TTS 配音(3 則新聞 + 開場白/收尾)+ 字卡")
+    _step(4, "TTS 配音(3 則新聞 + 開場白/收尾)+ 字卡")
     news_audio = tts.synthesize_items(llm_result["items"])
     opening_audio = closing_audio = None
     if config.USE_MIMI:
@@ -85,13 +101,13 @@ def run(platform: str = "ig") -> str:
         closing_audio = tts.synthesize_line(config.OUTRO_LINE, "output/audio/outro.mp3")
     cards = card_render.render_program_cards(llm_result, platform=platform)
 
-    _step(7, "影片合成(封面+開場白+3新聞+收尾)→ mp4")
+    _step(5, "影片合成(封面+開場白+3新聞+收尾)→ mp4")
     out = video.compose(cards, news_audio, opening_audio, closing_audio)
 
     # ⑧ UPDATE 3:自動上傳 YouTube(上傳失敗不影響已產出的 mp4)
     youtube_url = None
     if config.UPLOAD_ENABLED:
-        _step(8, "上傳 YouTube")
+        _step(6, "上傳 YouTube")
         try:
             from publisher import youtube
             yt = youtube.get_authenticated_service()

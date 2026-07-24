@@ -12,3 +12,4 @@ google-auth-oauthlib        # OAuth 2.0 授權
 google-auth-httplib2        # google auth transport
 google-genai                # Gemini 圖像生成 + 審圖(UPDATE 4/5)
 SQLAlchemy                  # 資料庫記錄(UPDATE 6)
+mcp                         # MCP Python SDK(UPDATE 8)

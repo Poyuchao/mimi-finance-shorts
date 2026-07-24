@@ -12,6 +12,8 @@
 > - **UPDATE 4(新聞卡 AI 生成示意圖 + fallback)**:每則新聞用 AI 生一張財經示意圖放進新聞卡上半(下半保留數字視覺化/字幕/來源);**生圖失敗/超時 → 該則自動退回純字卡,絕不中斷發片**。`USE_AI_IMAGE` 開關。標記 🆕 UPDATE 4。**推翻 UPDATE 2 的 U5「新聞卡無 AI 生圖」決策**(實測 Gemini 財經示意圖夠到位)。
 > - **UPDATE 5(AI 審圖 agent)**:生圖後、上片前,用 AI 審查每張示意圖(**編造數字/亂碼/重複標籤/真人/logo/離題**);不通過 → 帶問題**重生一次** → 再不過 → **該則退純字卡**。同時**修生圖 prompt**(禁編造數字、禁 caption)當第一道防線。`USE_IMAGE_REVIEW` 開關。標記 🆕 UPDATE 5。
 > - **UPDATE 6(資料庫記錄)**:用 SQLAlchemy + 本機 SQLite(`mimi.db`)把**每次執行的候選 ~10 篇 + LLM 選中的 3 篇 + 選片理由**記錄下來,用於**事後驗證 LLM 選片品質**(不做去重、不做分析)。寫 DB 失敗**絕不中斷發片**。標記 🆕 UPDATE 6。
+> - **UPDATE 7(GCP 部署)**:⏭️ **暫時跳過**(使用者決定先維持本機執行)。
+> - **UPDATE 8(Finance News MCP Server)**:把「**抓新聞 + 查歷史選片**」封裝成本地 **stdio MCP server**,以標準協議把工具能力暴露給選片 agent,**取代硬編碼整合**。核心是「**不重寫功能,只用 MCP 暴露既有能力**」。`USE_MCP` 開關 + **MCP 失敗自動 fallback 回直接呼叫**(發片穩定性優先於架構潮度)。標記 🆕 UPDATE 8。
 > - 部分 UPDATE 另有搭配文件 `FINANCE_VIDEO_DEVELOPMENT 修改指引.md`。
 
 ---
@@ -26,6 +28,10 @@
 ② 解析 + 篩選股市新聞 + 清洗
     ↓
 ③ 收斂成「候選 N_pool 則」(去重、排序,預設 ~10 則)
+    ↓
+   🆕 UPDATE 8:①②③ 可改由 MCP tool `fetch_finance_news` 提供(USE_MCP=True)
+   另有 tool `get_recent_selections` 查歷史選片給 agent 參考
+   ★ MCP 失敗 → fallback 回直接呼叫 ①②③,發片不中斷 ★
     ↓
 ④a LLM 第一步:從候選中「挑 3 則 + 給挑選理由」
     ↓
@@ -175,8 +181,8 @@
 - B1 **編造的財務數據**:圖上出現「看起來在陳述財經事實」的數字(實例:「台積電 2024 Q2 EPS +2.5元(舉例)、毛利率 53%」、日期「7/16」← AI 自己編的)
 - B2 **亂碼/錯字/不成句**(實例:「Q版 Mimi 分虑 起路谘詢排梳 拨資者剮測」)
 - B3 畫到**特定真實人物**(Q版米米貓 = 正確,不算違規)
-- B4 **真實企業商標 logo**(實例:tsmc / Google / HP)。★台北101、城市天際線、K線、金幣等通用符號與地標 = 允許★
-- B5 **嚴重離題 / 扭曲到不能看**
+- B4 **嚴重離題 / 扭曲到不能看**
+- ☑ **允許(不擋)**:真實企業 logo/商標(tsmc/NVIDIA…,編輯性使用,2026-07-15 使用者定案放行)、台北101/城市天際線/K線/金幣等通用符號與地標
 
 🟡 **minor(純美觀 → 放行,只記 log)**
 - M1 **任何文字/標籤重複**、標籤數量偏多 → ★永遠 minor,絕不可放進 blocking★
@@ -196,6 +202,22 @@
 | D6 | 失敗處理 | 🔴 **寫 DB 失敗只 log,絕不中斷發片**(記錄是附屬,不能拖垮主流程)|
 | D7 | 這次不做 | ❌ 跨天去重 ❌ 資料分析/儀表板 ❌ 上雲持久化(但 `link` 已存,鋪好路)|
 | D8 | 實作簡化 | ✅ **不需要 index 對映** —— 我們的 `select_top_news()` 回傳的 `picked` 本來就是完整候選 dict(含 `link`/`reason`),直接取即可(指引擔心的「index 對回 link」在本專案不存在)|
+
+#### 🆕 UPDATE 8（Finance News MCP Server)決策
+
+| # | 項目 | 結論 |
+|---|------|------|
+| P1 | 目的 | 🔴 **把工具能力以標準協議暴露給 agent,取代硬編碼整合** —— agent 與資料源解耦(換資料源/加工具只改 MCP server)|
+| P2 | 協議 / 型態 | **MCP (Model Context Protocol)**,官方 Python SDK(`mcp`);**本地 stdio server**(同機子行程,不需對外網路)|
+| P3 | 暴露的 tools | `fetch_finance_news`(抓+篩+收斂候選池)、`get_recent_selections`(查過去 N 天已選用的新聞)|
+| P4 | 底層邏輯 | 🔴 **不重寫** —— tool 內部就是呼叫既有 `fetch_rss` / `parse_filter` / `select_news` / `repository` |
+| P5 | fallback | 🔴 **MCP 連線/呼叫失敗 → 退回原本的直接呼叫**,發片絕不因 MCP 中斷 |
+| P6 | 開關 | **`USE_MCP`**(False = 走原本直接呼叫,完全等同現狀)|
+| P7 | 邊界 | 這次**只把「抓新聞 + 查歷史」上 MCP**;生圖/審圖/上傳暫不上(之後可擴充)|
+| P8 | 歷史用途 | `get_recent_selections` 這次**只是「讓 agent 看得到最近發過什麼」**(可選地餵進選片 prompt),**不做強制去重**(與 D7 一致)|
+| P9 | ⚠️ SDK 風險 | 🔴 **MCP SDK 更新快,不可照指引概念碼硬套** —— 必須先裝套件、**依當前版本的實際 API** 實作;不確定就停下來回報 |
+
+> 💡 **誠實的效益評估**:現階段是「同程式、同機、呼叫自己的函式」,包成 MCP **功能完全一樣**,還多了子行程/序列化/async 成本與一個新失敗點。好處是**架構投資**(換資料源、加工具、agent 自主調度、跨專案共用時才兌現)。因此 `USE_MCP` 開關與 fallback 是必要的風險控制。
 
 ### 0.3 本階段「不做」（之後才做，別提前）
 
@@ -293,7 +315,11 @@ finance-video/
 │   ├── __init__.py
 │   ├── models.py           #   Run + Candidate(SQLAlchemy)
 │   ├── database.py         #   engine / session / init_db
-│   └── repository.py       #   save_run(寫入 1 run + N candidates)
+│   └── repository.py       #   save_run + get_recent_selections(U8 補)
+├── mcp_server/             # 🆕 UPDATE 8:MCP server(本地 stdio)
+│   ├── __init__.py
+│   └── finance_news_server.py  #   tools: fetch_finance_news / get_recent_selections
+├── mcp_client.py           # 🆕 UPDATE 8:啟動 server 子行程 + 呼叫 tools
 ├── mimi.db                 # 🆕 UPDATE 6:SQLite 資料檔(gitignore)
 ├── assets/                 # 手動素材(非 pipeline 產)
 │   └── mimi/               # 🆕 UPDATE 2:米米素材只要 2 段(頭尾)
@@ -408,6 +434,12 @@ REVIEW_TIMEOUT    = 60        # 單次審圖逾時(秒);逾時視為「不通過
 
 # ── 🆕 UPDATE 6:資料庫記錄 ────────────────────────
 DB_URL = "sqlite:///mimi.db"  # 本機;上雲(UPDATE 7)改持久化連線,models/repository 不動
+
+# ── 🆕 UPDATE 8:MCP ──────────────────────────────
+USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 6 現狀)
+DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考歷史,不強制去重)
+# ★ 原設計的 MCP_SERVER_CMD 已取消:改由 mcp_client.py 自行推導
+#   sys.executable + 絕對路徑 script + cwd=專案根(避免 "python" 抓到 Store stub)
 ```
 ⚠️ `.gitignore` 要加 `mimi.db`(資料檔不 commit)。
 
@@ -727,10 +759,21 @@ USE_MIMI=False(見 U11):封面 + 3 純字卡新聞 + 純字卡結尾卡(來源),
 
 ```
 把 ①→⑦ 串起來:
-  entries = fetch_rss()
-  stock_news = parse_filter(entries)
-  candidates = select_news(stock_news, pool=10)              # 候選池
+  # 🆕 UPDATE 8:候選池改由 MCP 提供(失敗則 fallback 直接呼叫)
+  if config.USE_MCP:
+      try:
+          candidates, recent = asyncio.run(
+              mcp_client.fetch_candidates_via_mcp(config.NEWS_POOL, config.DEDUP_DAYS))
+      except Exception as e:
+          log(f"MCP 取得失敗,fallback 直接呼叫:{e}")   # ★ 發片不中斷 ★
+          candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
+          recent = []
+  else:
+      candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
+      recent = []
+
   picked = llm_service.select_top_news(candidates, n=3)      # ④a LLM 選片
+  # (可選 U8-4)把 recent 帶進 select prompt,讓 agent 看得到最近發過什麼
   llm_result = llm_service.rewrite_scripts(picked)           # ④b LLM 改寫
 
   # 🆕 UPDATE 4:每則生圖(rewrite 後、card_render 前;失敗回 None 不中斷)
@@ -926,9 +969,42 @@ db/repository.py:
       selected=True + position + select_reason
     • commit,回 run.id
 
+  🆕 UPDATE 8 補:
+  get_recent_selections(session, days) -> [{title, link}, ...]
+    • 查過去 days 天內 selected=True 的新聞(join Run 用 run_date 過濾)
+    • 供 MCP tool `get_recent_selections` 使用(讓 agent 看得到最近發過什麼)
+
 ⚠️ 上雲(UPDATE 7):Cloud Run Job 無狀態 → 容器內 mimi.db 跑完就消失!
    屆時改持久化(SQLite+GCS 下載/上傳,或換 DB)→ 只改 config.DB_URL + 加上下載,
    models/repository 不用動。
+```
+
+### 3.14 `mcp_server/` + `mcp_client.py` — MCP 工具層（🆕 UPDATE 8）
+
+```
+職責:用 MCP 標準協議,把「抓新聞 + 查歷史選片」暴露成 agent 可呼叫的 tools。
+     ★ 不重寫功能 —— tool 內部就是呼叫既有模組。★
+
+mcp_server/finance_news_server.py(本地 stdio server):
+  暴露兩個 tool(list_tools 回傳含 JSON Schema 的工具描述):
+
+  1. fetch_finance_news(pool_size: int = 10)
+     → 內部:fetch_rss() → parse_filter() → select_news(pool=pool_size)
+     → 回候選池 JSON(⚠️ datetime 要轉字串才能序列化)
+
+  2. get_recent_selections(days: int = 7)
+     → 內部:repository.get_recent_selections(session, days)
+     → 回 [{title, link}, ...](過去 N 天已選用的新聞)
+
+mcp_client.py:
+  fetch_candidates_via_mcp(pool_size, dedup_days) -> (candidates, recent)
+    • 以 stdio 啟動 server 子行程 → initialize → call_tool ×2 → 解析 JSON
+    • ⚠️ MCP 是 async → main.py(同步)呼叫處要用 asyncio.run() 包
+
+🔴 SDK 風險(指引兩次警告):
+   MCP Python SDK 的實際 API(class 名 / 裝飾器 / types)更新快,
+   ★必須先安裝套件、依「當前版本的官方文件與實際 API」實作★,
+   不可照指引的概念碼硬套;不確定就停下來回報。
 ```
 
 ---
@@ -1128,6 +1204,35 @@ db/repository.py:
   → 查某天的 run → 看 10 篇候選 + 哪 3 篇 selected + 理由
   ✅ 驗證:能清楚看出「LLM 從這 10 篇選了哪 3 篇、為什麼」
   → 可用 DB Browser for SQLite(免費 GUI)或寫個小查詢腳本
+```
+
+### 🆕 UPDATE 8:MCP Server 開發順序
+
+```
+階段 U8-0:先確認 SDK 實際 API ★別照概念碼硬套★
+  → pip install mcp,查當前版本的官方寫法(Server/裝飾器/types/stdio)
+  ✅ 驗證:能寫出一個最小可跑的 stdio server + client 往返
+  → 這步不確定就停下來回報
+
+階段 U8-1:MCP server 單獨測
+  → finance_news_server.py:兩個 tool,內部呼叫既有 fetch_rss/parse_filter/select_news/repository
+  → 補 repository.get_recent_selections(days)
+  ✅ 驗證:list_tools 列得出兩個 tool;call fetch_finance_news 回候選池;
+        call get_recent_selections 回歷史(DB 已有 UPDATE 6 的資料可測)
+  ⚠️ candidates 的 datetime 要能 JSON 序列化
+
+階段 U8-2:MCP client 單獨測
+  → mcp_client.fetch_candidates_via_mcp()
+  ✅ 驗證:client 啟動 server 子行程 → 拿到 (candidates, recent)
+
+階段 U8-3:整合 main + ★驗 fallback★
+  ✅ 驗證:USE_MCP=True 跑完整 pipeline(透過 MCP 拿新聞)
+  ✅ 驗證:★故意弄壞 MCP(改壞 server 路徑)→ fallback 直接呼叫,發片不中斷★
+  ✅ 驗證:USE_MCP=False → 完全等同現狀
+
+階段 U8-4:(可選)歷史參考進選片
+  → 把 recent 帶進 select_top_news 的 prompt
+  ✅ 驗證:agent 選片時看得到「最近發過的」
 ```
 
 ---
@@ -1358,6 +1463,41 @@ db/repository.py:
       → **經驗:規則埋在清單裡 LLM 會忽略;改成「回答前的自我檢查步驟」才有效**(同「放具體反例」)
 - [x] 附加工具:`query_runs.py`(`--list` / `<run_id>`);也可用 DB Browser for SQLite 開 `mimi.db`
 
+### 🆕 UPDATE 8 MCP Server Checklist
+
+- [x] U8-0:`pip install mcp`(實裝 **1.28.1**)+ ★確認當前 SDK 的實際 API(不照概念碼硬套)★
+- [x] U8-1:`mcp_server/finance_news_server.py`(**FastMCP** + `@app.tool()`,stdio)
+- [x] U8-1:兩個 tool 內部呼叫既有邏輯(★不重寫功能★:fetch_rss / parse_filter / select_news / repository)
+- [x] U8-1:`db/repository.get_recent_selections(session, days)` 補上
+- [x] U8-1:candidates 的 datetime 可 JSON 序列化(`_jsonable()`:datetime→isoformat、clean_text 截 300 字)
+- [x] U8-2:`mcp_client.py`(啟動 server 子行程 + call_tool + 解析)
+- [x] U8-3:`main.py` USE_MCP 分支 + ★MCP 失敗 fallback 直接呼叫★(asyncio.run 包)
+- [x] U8-4:config(USE_MCP / DEDUP_DAYS)★`MCP_SERVER_CMD` 最終未採用,見下方偏離說明★
+- [x] U8-4:`recent` 帶進 select prompt(`select_top_news(candidates, recent=...)`)
+- [x] requirements 加 `mcp`
+- [x] ✅ 分階段驗證:server → client → 整合 → ★弄壞 MCP 驗 fallback★
+- [x] ✅ USE_MCP=False → 完全等同現狀
+      → 驗證:mcp_client **完全沒被呼叫**、候選仍 10 則、`recent=[]`、select prompt **不含歷史區塊**
+
+**卡關實況(實作後回填)**
+- [x] MCP SDK 的 API 與指引概念碼不符(★如預期發生★)
+      → 指引用低階 `Server` + 手寫 `inputSchema`;SDK 1.28.1 實際有 **`FastMCP`**:
+        `@app.tool()` 裝飾器 + type hints **自動生成 JSON Schema**,`app.run(transport="stdio")`
+      → **經驗:先寫 10 行 ping/pong 打通 stdio,再接真邏輯**,別一次寫完才發現 API 不對
+- [x] stdout 汙染:server 端任何 `print` 都會**打壞 MCP 協議**(stdout 是協議通道)
+      → server 一律 `logging.basicConfig(stream=sys.stderr)`
+- [x] server 子行程的 python / 工作目錄
+      → 用 `sys.executable`(保證是 venv 的 python,套件才找得到)
+      → 用 `cwd=_PROJECT_ROOT`(否則 `sqlite:///mimi.db` 相對路徑找不到 DB)
+- [x] 回傳解析:優先讀 `structuredContent`(FastMCP 回 list 時包成 `{"result": [...]}`),
+      沒有才 fallback 解析 `content[0].text` 的 JSON
+
+**★ 與指引的偏離:`config.MCP_SERVER_CMD` 未採用 ★**
+指引原設計 `MCP_SERVER_CMD = ["python", "mcp_server/finance_news_server.py"]`,實作改為
+`mcp_client.py` 內自行推導 `sys.executable` + **絕對路徑** script + `cwd=專案根目錄`。
+原因:寫死 `"python"` 在本機會抓到 Microsoft Store 的 python stub(本專案早期踩過),
+且相對路徑受呼叫端 cwd 影響。→ 少一個會設錯的設定項,啟動更穩。
+
 ---
 
 ## 6. 需要使用者提供 / 確認的
@@ -1418,6 +1558,9 @@ db/repository.py:
 • 🔴 UPDATE 7(部署)必須處理:**Cloud Run Job 無狀態 → 容器內 `mimi.db` 跑完就消失**
     → DB 要換持久化(SQLite+GCS 每次下載/上傳,或換 DB);ORM 只改 `config.DB_URL`,models/repository 不動
 • 審稿 agent:口播稿是否偏離原新聞、標題是否誇大(UPDATE 5 只做了審圖)
+• 🆕 UPDATE 8 之後可擴充:把「生圖 / 審圖 / TTS」也暴露成 MCP tools
+    → 讓「內容生成 agent」透過 MCP 調度整條產製線
+• MCP over HTTP transport(跨機 / 多 agent 共用);與 LangGraph 等 agent 框架結合
 ```
 （🆕 UPDATE 1:原「AI 虛擬人像」已落地為米米主播。UPDATE 3:YouTube 本機上傳已做。UPDATE 4:新聞卡 AI 生圖已做,移出未來清單。）
 

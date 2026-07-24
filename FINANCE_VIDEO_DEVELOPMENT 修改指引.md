@@ -1,283 +1,295 @@
-# FINANCE_VIDEO_DEVELOPMENT — 修改指引 UPDATE 6:資料庫記錄（候選池 + 選片結果,驗證選片品質）
+# FINANCE_VIDEO_DEVELOPMENT — 修改指引 UPDATE 8:Finance News MCP Server（工具能力以 MCP 暴露給選片 agent）
 
-> 搭配主規格 **FINANCE_VIDEO_DEVELOPMENT.md**,接續 UPDATE 1~5(米米、節目化、YouTube 上傳、AI 生圖、AI 審圖,皆已完成)。
+> 搭配主規格 **FINANCE_VIDEO_DEVELOPMENT.md**,接續 UPDATE 1~7(米米、節目化、YouTube 上傳、AI 生圖、AI 審圖、DB 記錄、GCP 部署)。
 >
-> 現狀:`python main.py` 能抓新聞 → LLM 從候選 ~10 則挑 3 則(給理由)→ 改寫 → 生圖 → 審圖 → 米米節目影片 → 上傳 YouTube。這份加一個**輕量資料庫層**:把每次執行的**候選 10 篇 + LLM 選的 3 篇 + 選片理由**記錄下來,用於**事後驗證 LLM 選片品質**。
+> 現狀:`main.py` 直接呼叫 `fetch_rss()` / `select_news()` / `repository` 抓新聞與存取 DB。這份把**新聞抓取與歷史選片查詢**封裝成一個 **MCP(Model Context Protocol)server**,以標準化協議把「工具能力」暴露給 LLM 選片 agent,取代硬編碼整合。
 >
-> **給開發 agent:這次加輕量記錄,用 SQLAlchemy + SQLite(本機)。不做去重、不做分析——只「記錄」。改動集中在:新增 db 模組、pipeline 選片後把候選池+選片結果寫入。這是「在既有 pipeline 尾端插一層記錄」,現有邏輯完全不動。分階段、每步單獨驗、不確定就停下來問。⚠️ 上雲時 SQLite 要換持久化(部署那份 UPDATE 7 處理)。**
+> **給開發 agent:這次引入 MCP,把既有的抓取/查詢邏輯「包成 MCP server 的 tools」,並讓選片改成「agent 透過 MCP 呼叫工具」。重點是『不重寫功能,而是用 MCP 標準協議暴露既有能力』。這是進階架構升級,務必分階段、每步單獨驗、不確定就停下來問。⚠️ 保留原本的直接呼叫路徑當 fallback(MCP 掛掉不能讓發片停擺)。**
 
 ---
 
-## U6-0. 這次在做什麼 + 邊界
+## U8-0. 這次在做什麼 + 為什麼
 
 ```
-做:
-  • SQLAlchemy models(runs 執行 + candidates 候選新聞)
-  • 記錄:每次執行的「候選 ~10 篇」,標記哪 3 篇被 LLM 選中 + 選片理由
-  • 用途:事後驗證「LLM 從 10 篇選的 3 篇合不合理」
-  • 本機 SQLite(單檔 mimi.db)
+現在:main.py 硬編碼呼叫 fetch_rss()、select_news()、repository.get_recent()
+  → agent/LLM 與「資料來源」是寫死綁定的
 
-不做(現在):
-  ❌ 跨天去重(只記錄,不比對剔除)→ 但 link 有存,之後想加隨時能加
-  ❌ 資料分析/儀表板
-  ❌ 上雲持久化(SQLite→GCS)→ 部署那份 UPDATE 7 處理
+改成:把這些能力包成 MCP server 的 tools:
+  • fetch_finance_news → 抓 + 篩 + 收斂候選池
+  • get_recent_selections → 查 DB 過去發過的新聞(歷史選片)
+  → 選片 agent「透過 MCP 標準協議」呼叫這些工具拿資料
+  → 不再硬編碼整合
+
+為什麼(架構價值,也是履歷/JD 對齊點):
+  ✅ Tool/capability exposure to LLM-based agents(工具暴露給 agent)
+  ✅ Structured context sharing between models, tools, and agents
+  ✅ Interoperability without hard-coded integrations(去除硬編碼整合)
+  → agent 與資料源解耦,之後換資料源/加工具只改 MCP server
 ```
 
-### U6-0.1 為什麼做（用途明確,不是為記錄而記錄）
-
-```
-LLM 選片是「黑箱」(從候選 ~10 則挑 3 則)
-→ 想知道「選得好不好、有沒有漏掉更重要的」
-→ 記「10 篇候選 + 標記選中的 3 篇 + 理由」
-→ 事後回看:評估選片品質 → 需要的話調 select prompt
-
-→ 真實用途:資料驗證 AI 決策(不盲信 LLM)
-→ 附帶:link 都存了,之後想做「跨天去重」資料就在
-```
-
-### U6-0.2 已定案決策（不要自行更改）
+### U8-0.1 已定案決策（不要自行更改）
 
 | # | 項目 | 結論 |
 |---|------|------|
-| 1 | ORM | **SQLAlchemy**（使用者 ResumePilot 用過）|
-| 2 | DB | 本機 **SQLite**（`mimi.db`）;上雲換持久化(UPDATE 7)|
-| 3 | 記錄範圍 | **候選 ~10 篇全記**,標記 `selected` + `select_reason` |
-| 4 | 用途 | **驗證 LLM 選片品質**（非去重、非分析）|
-| 5 | 去重 | **這次不做**（但 `link` 有存,鋪路）|
-| 6 | 寫入時機 | 影片產出/上傳後(或選片後)寫一次 |
-| 7 | 表結構 | 2 表:`runs`（執行）+ `candidates`（候選,FK→runs）|
-| 8 | 失敗處理 | 寫 DB 失敗不可中斷發片(try/except 包住,log 即可)|
+| 1 | 協議 | **MCP (Model Context Protocol)**,用官方 Python SDK（`mcp`）|
+| 2 | server 型態 | 本地 **stdio** MCP server（同機、子行程,不需對外網路）|
+| 3 | 暴露的 tools | `fetch_finance_news`、`get_recent_selections`（先兩個核心）|
+| 4 | 消費端 | 選片 agent 透過 MCP client 呼叫 tools → 拿到資料再做 LLM 選片 |
+| 5 | 底層邏輯 | **不重寫**:MCP tool 內部就是呼叫既有 `fetch_rss`/`parse_filter`/`select_news`/`repository` |
+| 6 | fallback | ⚠️ **MCP 連線/呼叫失敗 → 退回原本的直接呼叫**（發片不可因 MCP 中斷）|
+| 7 | 開關 | `USE_MCP`（config,False = 走原本直接呼叫,等同 UPDATE 7 現狀）|
+| 8 | 邊界 | 這次**只把「抓新聞 + 查歷史」上 MCP**;生圖/審圖/上傳暫不上 MCP（之後可擴充）|
 
 ---
 
-## U6-1. Schema（`db/models.py`）
+## U8-1. 新增 MCP Server（`mcp_server/finance_news_server.py`）
+
+```
+用 MCP Python SDK 建一個 stdio server,暴露兩個 tool。
+
+概念結構(以 MCP SDK 的 server 寫法):
+
+  from mcp.server import Server
+  from mcp.server.stdio import stdio_server
+  import mcp.types as types
+
+  app = Server("finance-news")
+
+  @app.list_tools()
+  async def list_tools():
+      return [
+          types.Tool(
+              name="fetch_finance_news",
+              description="抓取三來源財經 RSS,篩股市,收斂成候選 ~10 則",
+              inputSchema={
+                  "type": "object",
+                  "properties": {
+                      "pool_size": {"type": "integer", "default": 10}
+                  },
+              },
+          ),
+          types.Tool(
+              name="get_recent_selections",
+              description="查詢過去 N 天已選用/發布過的新聞(標題+連結)",
+              inputSchema={
+                  "type": "object",
+                  "properties": {
+                      "days": {"type": "integer", "default": 7}
+                  },
+              },
+          ),
+      ]
+
+  @app.call_tool()
+  async def call_tool(name, arguments):
+      if name == "fetch_finance_news":
+          # ★ 內部呼叫既有邏輯,不重寫 ★
+          entries = fetch_rss()
+          stock = parse_filter(entries)
+          candidates = select_news(stock, pool=arguments.get("pool_size", 10))
+          return [types.TextContent(type="text", text=json.dumps(candidates, ensure_ascii=False))]
+      if name == "get_recent_selections":
+          session = get_session()
+          links = repository.get_recent_selections(session, days=arguments.get("days", 7))
+          return [types.TextContent(type="text", text=json.dumps(links, ensure_ascii=False))]
+
+  async def main():
+      async with stdio_server() as (r, w):
+          await app.run(r, w, app.create_initialization_options())
+```
+
+```
+⚠️ MCP SDK 的實際 API(class 名、裝飾器、types)可能與此概念碼有出入,
+   且版本更新快 → agent 依「當前安裝的 mcp 套件官方文件/範例」實作,
+   不確定就回報,不要照這段概念碼硬套。
+⚠️ candidates 要能 JSON 序列化(datetime 轉字串)。
+```
+
+### U8-1.1 需要 repository 補一個查詢（若 UPDATE 6 沒有）
+
+```
+get_recent_selections 需要一個「查過去 N 天 selected 新聞」的方法:
+
+  # db/repository.py 補
+  def get_recent_selections(session, days: int):
+      cutoff = date.today() - timedelta(days=days)
+      rows = (session.query(Candidate.title, Candidate.link)
+                     .join(Run)
+                     .filter(Run.run_date >= cutoff, Candidate.selected == True)
+                     .all())
+      return [{"title": t, "link": l} for t, l in rows]
+
+→ UPDATE 6 記錄了 selected → 這裡查得到
+→ 目前 pipeline「不強制去重」,但這個查詢讓 agent「看得到歷史」
+  (agent 可自行參考「最近發過什麼」來選片,或未來做去重)
+```
+
+---
+
+## U8-2. MCP Client:選片改成透過 MCP 拿資料（`mcp_client.py`）
+
+```
+選片 agent 端:啟動 MCP server(子行程)→ 呼叫 tools → 拿資料。
+
+概念:
+  from mcp import ClientSession, StdioServerParameters
+  from mcp.client.stdio import stdio_client
+
+  async def fetch_candidates_via_mcp(pool_size=10, dedup_days=7):
+      params = StdioServerParameters(command="python",
+                                     args=["mcp_server/finance_news_server.py"])
+      async with stdio_client(params) as (r, w):
+          async with ClientSession(r, w) as session:
+              await session.initialize()
+              # 呼叫工具 1:拿候選新聞
+              res = await session.call_tool("fetch_finance_news",
+                                            {"pool_size": pool_size})
+              candidates = json.loads(res.content[0].text)
+              # 呼叫工具 2:拿歷史選片(給 agent 參考)
+              rec = await session.call_tool("get_recent_selections",
+                                            {"days": dedup_days})
+              recent = json.loads(rec.content[0].text)
+              return candidates, recent
+
+→ 回傳 candidates(候選池)+ recent(歷史)給選片 agent
+→ 選片 agent 拿這些做 LLM 選片(select_top_news)
+→ ★ 這就是「agent 透過 MCP 標準協議取得工具能力」★
+```
+
+```
+⚠️ 同上:MCP client 的實際 API 依當前 SDK 文件。
+⚠️ async:MCP 是 async,main.py 呼叫處要用 asyncio.run() 包。
+```
+
+---
+
+## U8-3. 整合進 `main.py`（加 USE_MCP 分支 + fallback）
+
+```
+現有:
+  entries = fetch_rss()
+  stock_news = parse_filter(entries)
+  candidates = select_news(stock_news, pool=10)
+  picked = llm_service.select_top_news(candidates, n=3)
+
+改成(MCP 分支 + fallback):
+  if config.USE_MCP:
+      try:
+          candidates, recent = asyncio.run(
+              mcp_client.fetch_candidates_via_mcp(pool_size=config.NEWS_POOL,
+                                                  dedup_days=config.DEDUP_DAYS))
+      except Exception as e:
+          log.warning(f"MCP 取得失敗,fallback 直接呼叫: {e}")
+          candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
+          recent = []
+  else:
+      candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
+      recent = []
+
+  picked = llm_service.select_top_news(candidates, n=config.NEWS_COUNT)
+  # (可選)把 recent 傳進 select_top_news 的 prompt,讓 agent 參考「最近發過的」
+
+→ ★ MCP 失敗 → 退回原本直接呼叫 → 發片不中斷 ★
+→ USE_MCP=False → 完全等同 UPDATE 7 現狀
+```
+
+---
+
+## U8-4. `config.py` 新增
 
 ```python
-from sqlalchemy import (Column, Integer, String, Text, Boolean,
-                        Date, DateTime, ForeignKey)
-from sqlalchemy.orm import relationship, declarative_base
-from datetime import datetime
-
-Base = declarative_base()
-
-class Run(Base):
-    """一次 pipeline 執行 = 一筆"""
-    __tablename__ = "runs"
-    id          = Column(Integer, primary_key=True)
-    run_date    = Column(Date, index=True)
-    created_at  = Column(DateTime, default=datetime.now)
-    status      = Column(String)                    # success / failed / skipped
-    video_title = Column(String, nullable=True)
-    youtube_url = Column(String, nullable=True)
-
-    candidates  = relationship("Candidate", back_populates="run")
-
-class Candidate(Base):
-    """一次執行的候選新聞（~10 篇全記,標記哪些被選）"""
-    __tablename__ = "candidates"
-    id            = Column(Integer, primary_key=True)
-    run_id        = Column(Integer, ForeignKey("runs.id"))   # ★ 關聯:屬於哪次執行
-    title         = Column(String)
-    source        = Column(String)
-    link          = Column(String, index=True)               # 之後去重也用得到
-    published     = Column(DateTime, nullable=True)
-    selected      = Column(Boolean, default=False)           # ★ 被 LLM 選中?
-    position      = Column(Integer, nullable=True)           # 若選中,第幾則(1/2/3)
-    select_reason = Column(Text, nullable=True)              # ★ LLM 選片理由(選中才有)
-    created_at    = Column(DateTime, default=datetime.now)
-
-    run           = relationship("Run", back_populates="candidates")
-```
-
-```
-關係:runs (1) ──< candidates (多)
-  一次 run → ~10 筆 candidates(其中 3 筆 selected=True)
-  用 run_id 串起「這 10 篇是同一次執行的」
+# 🆕 UPDATE 8:MCP
+USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 7)
+DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考歷史)
+MCP_SERVER_CMD = ["python", "mcp_server/finance_news_server.py"]
 ```
 
 ---
 
-## U6-2. DB 連線 + 初始化（`db/database.py`）
-
-```python
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from db.models import Base
-import config
-
-engine = create_engine(config.DB_URL, echo=False)   # 本機:sqlite:///mimi.db
-SessionLocal = sessionmaker(bind=engine)
-
-def init_db():
-    Base.metadata.create_all(engine)   # 首次自動建表
-
-def get_session():
-    return SessionLocal()
-```
+## U8-5. requirements
 
 ```
-→ config.DB_URL 本機:"sqlite:///mimi.db"
-→ 上雲(UPDATE 7):改連線字串(SQLite+GCS 或其他),models 不動
-→ main.py 開頭呼叫 init_db()
+新增:
+  mcp            # MCP Python SDK(官方)
+
+→ pip install mcp
+→ ⚠️ 確認版本 + 官方文件(SDK 更新快)
 ```
 
 ---
 
-## U6-3. 寫入邏輯（`db/repository.py`）
-
-```python
-from datetime import date
-from db.models import Run, Candidate
-
-def save_run(session, *, status, video_title=None, youtube_url=None,
-             candidates=None, selected_links=None, reasons=None, positions=None):
-    """
-    candidates: 候選 ~10 篇 [{title, source, link, published}, ...]
-    selected_links: 被選中的 link 集合(set)
-    reasons: {link: 選片理由}
-    positions: {link: 第幾則}
-    """
-    run = Run(run_date=date.today(), status=status,
-              video_title=video_title, youtube_url=youtube_url)
-    session.add(run)
-    session.flush()   # 拿 run.id
-
-    for c in (candidates or []):
-        is_sel = c["link"] in (selected_links or set())
-        session.add(Candidate(
-            run_id=run.id,
-            title=c.get("title"), source=c.get("source"),
-            link=c.get("link"), published=c.get("published"),
-            selected=is_sel,
-            position=(positions or {}).get(c["link"]) if is_sel else None,
-            select_reason=(reasons or {}).get(c["link"]) if is_sel else None,
-        ))
-    session.commit()
-    return run.id
-```
+## U8-6. ⚠️ 部署考量（GCP / UPDATE 7 已部署的話）
 
 ```
-→ 傳入「候選 10 篇」+「哪些被選(link)」+「理由」+「位置」
-→ 一次寫入:1 筆 run + ~10 筆 candidates(標記 selected)
+MCP server 是「本地 stdio 子行程」→ 跟主程式同一個容器一起跑:
+  • Dockerfile 不用特別改(mcp_server/ 已在 code 內,一起打包)
+  • Cloud Run Job 執行 main.py → main 內部啟動 MCP server 子行程 → 同容器
+  • ★ 不需要「另外部署一個 MCP 服務」★(stdio 同機即可)
+
+→ 對部署影響小(不是獨立網路服務)
+→ 若之後要「跨機/對外 MCP」再改 HTTP transport(這次不做)
 ```
 
 ---
 
-## U6-4. 整合進 pipeline（`main.py`）
+## U8-7. 開發順序（分階段,每步單獨驗）
 
 ```
-在「LLM 選片之後」就有了「候選池 + 選中的 + 理由」,先留著,最後寫入。
+階段 U8-1:MCP server 單獨測
+  → 寫 finance_news_server.py(兩個 tool)
+  → 用 MCP 官方的 inspector / 簡單 client 測「list_tools + call_tool」
+  ✅ 驗證:能列出兩個 tool、呼叫 fetch_finance_news 回候選池、
+        get_recent_selections 回歷史(先塞假 DB 資料測)
+  → server 單獨會動,才接 client
 
-現有流程:
-  candidates = select_news(...)                    # 候選 ~10 篇
-  picked = llm_service.select_top_news(candidates) # 選 3 則 + reason(index+理由)
-  ... rewrite / 生圖 / 審圖 / TTS / 影片 / 上傳 ...
+階段 U8-2:MCP client 單獨測
+  → mcp_client.fetch_candidates_via_mcp()
+  ✅ 驗證:client 啟動 server 子行程 → 拿到 candidates + recent
 
-加寫入(main 尾端,上傳後):
-  try:
-      # 從 picked 整理出:selected_links / reasons / positions
-      selected_links = {candidates[p.index]["link"] for p in picked}
-      reasons   = {candidates[p.index]["link"]: p.reason for p in picked}
-      positions = {candidates[p.index]["link"]: i+1 for i, p in enumerate(picked)}
+階段 U8-3:整合 main + fallback
+  → USE_MCP 分支 + try/except fallback
+  ✅ 驗證:USE_MCP=True 正常跑完整 pipeline(透過 MCP 拿新聞)
+  ✅ 驗證:★ 故意讓 MCP 掛掉(改壞 server 路徑)→ fallback 直接呼叫,發片不中斷 ★
+  ✅ 驗證:USE_MCP=False → 完全等同 UPDATE 7
 
-      repository.save_run(
-          session,
-          status="success",              # 或 failed / skipped
-          video_title=llm_result.video_title,
-          youtube_url=youtube_url,        # 沒上傳就 None
-          candidates=candidates,          # ★ 候選 ~10 篇全給
-          selected_links=selected_links,
-          reasons=reasons,
-          positions=positions,
-      )
-  except Exception as e:
-      log.warning(f"寫入 DB 失敗(不影響發片): {e}")   # ★ 不中斷
-
-→ ⚠️ picked 的 index 對回 candidates 拿 link(主規格已有 index 對回機制)
-→ ⚠️ 寫 DB 包 try/except:寫失敗只 log,影片照發(記錄是附屬,不能拖垮主流程)
+階段 U8-4:（可選）歷史參考進選片
+  → 把 recent 傳進 select_top_news 的 prompt
+  ✅ 驗證:agent 選片時「看得到最近發過的」(prompt 有帶入)
 ```
 
 ---
 
-## U6-5. `config.py` 新增
+## U8-8. 修改 Checklist
 
-```python
-# 🆕 UPDATE 6:資料庫記錄
-DB_URL = "sqlite:///mimi.db"   # 本機;上雲(UPDATE 7)改持久化連線
-```
-
-⚠️ `.gitignore` 加 `mimi.db`（資料檔不 commit）。
-
----
-
-## U6-6. 開發順序（分階段,每步單獨驗）
-
-```
-階段 U6-1:models + database + 建表
-  → db/models.py、db/database.py
-  ✅ 驗證:跑 init_db() → mimi.db 生成、runs/candidates 表建好
-
-階段 U6-2:寫入單獨測
-  → repository.save_run() 塞一筆假資料(1 run + 10 candidates,標 3 篇 selected)
-  ✅ 驗證:用 DB Browser for SQLite 開 mimi.db,看到 1 筆 run + 10 筆候選、
-        3 筆 selected=True 有 reason/position,關聯(run_id)對
-
-階段 U6-3:整合進 main
-  → main 尾端組 selected_links/reasons/positions + save_run(包 try/except)
-  ✅ 驗證:正常跑一次 python main.py → mimi.db 多一筆完整記錄
-  ✅ 驗證:故意讓寫 DB 出錯(如改壞 DB_URL)→ 影片照樣產出/上傳(不中斷)
-
-階段 U6-4:驗證選片(這就是這功能的目的)
-  → 開 mimi.db,查某天的 run → 看 10 篇候選 + 哪 3 篇 selected + 理由
-  ✅ 驗證:能清楚看出「LLM 從這 10 篇選了哪 3 篇、為什麼」
-```
-
----
-
-## U6-7. 修改 Checklist
-
-- [ ] U6-1:db/models.py（Run + Candidate,link 建 index,relationship）
-- [ ] U6-1:db/database.py（engine/session/init_db）
-- [ ] U6-3:repository.save_run（1 run + N candidates,標 selected/reason/position）
-- [ ] U6-4:main 尾端整理 selected_links/reasons/positions + save_run
-- [ ] U6-4:★ 寫 DB 包 try/except,失敗不中斷發片 ★
-- [ ] U6-5:config DB_URL
-- [ ] main.py 開頭 init_db()
-- [ ] .gitignore 加 mimi.db
-- [ ] 分階段驗證(建表→寫入→整合→開 DB 看選片)
+- [ ] U8-1:mcp_server/finance_news_server.py(list_tools + call_tool)
+- [ ] U8-1:兩個 tool(fetch_finance_news / get_recent_selections)內部呼叫既有邏輯
+- [ ] U8-1:repository.get_recent_selections(若 UPDATE 6 沒有,補上)
+- [ ] U8-1:candidates/datetime 可 JSON 序列化
+- [ ] U8-2:mcp_client.py(啟動 server + call_tool + 解析)
+- [ ] U8-3:main.py USE_MCP 分支 + ★ MCP 失敗 fallback 直接呼叫 ★
+- [ ] U8-4:config(USE_MCP / DEDUP_DAYS / MCP_SERVER_CMD)
+- [ ] U8-5:requirements 加 mcp
+- [ ] 分階段驗證(server→client→整合→fallback)
 
 ### 卡關立刻停手回報
-- [ ] picked 的 index 對不回 candidates 的 link(對應問題)
-- [ ] SQLite 檔路徑/權限問題
-- [ ] relationship 設定 / FK 關聯查詢有問題
+- [ ] MCP SDK 的 API(class/裝飾器/types)與概念碼不符 → 依當前官方文件,回報
+- [ ] async / asyncio 整合到同步的 main.py 有問題
+- [ ] MCP server 子行程啟動失敗 / stdio 溝通問題
+- [ ] JSON 序列化(datetime、特殊字元)
+- [ ] 部署後容器內子行程行為異常
 
 ---
 
-## U6-8. ⚠️ 上雲注意（部署 UPDATE 7 處理，先記著）
+## U8-9. 之後可擴充（本次不做）
 
 ```
-Cloud Run Job「無狀態」→ 容器內 mimi.db 跑完就消失!
-  → 上雲時 SQLite 存不住 → 記錄會遺失
-
-→ 部署(UPDATE 7)要把 DB 換持久化:
-  • SQLite + GCS(每次執行:GCS 下載 db → 用 → 上傳回)★ 推薦,維持 SQLAlchemy
-  • 或 Firestore(使用者 Jaijaido 用過,但要改 NoSQL 寫法)
-
-→ ★ 這份先做本機 SQLite,把「記錄」做對 ★
-→ 上雲換 DB 只改 config.DB_URL + 加 GCS 上下載(models/repository 不動)
-```
-
----
-
-## U6-9. 需要使用者確認
-
-```
-🟠 決定:
-  • 要不要「未來加去重」(現在只記錄;link 有存,之後想加隨時能加)
-  • 上雲 DB 方案(SQLite+GCS / Firestore)→ 部署 UPDATE 7 再定
-  • 驗證選片:建議用 DB Browser for SQLite(免費 GUI)開 mimi.db 看
+• 更多 tool 上 MCP:生圖、審圖、TTS 也可暴露成 MCP tools
+  → 讓「內容生成 agent」透過 MCP 調度整條產製
+• HTTP transport:若要「跨機/多 agent 共用」→ 改 MCP over HTTP
+• 與 LangGraph 審閱結合:審閱 agent 透過 MCP 呼叫審查工具
+  → Agent(LangGraph)+ 工具(MCP)= 完整 agent 架構
 ```
 
 ---
 
-> 📌 **這次:輕量記錄「候選池 + 選片結果 + 理由」,用來驗證 LLM 選片品質。** 不做去重、不做分析,只記錄。SQLAlchemy + SQLite(本機),寫在 pipeline 尾端且 try/except 包住(寫失敗不拖垮發片)。runs (1)──<candidates(多),用 run_id 關聯,candidates 全記 ~10 篇並標 selected/reason。分階段:建表→寫入→整合→開 DB 看選片。⚠️ 上雲時 SQLite 要換持久化(UPDATE 7,ORM 換 DB 只改連線)。不確定(尤其 index 對回 link)就停下來問。目標:每天發什麼、LLM 怎麼選的,都有據可查。
+> 📌 **這次:把「抓新聞 + 查歷史選片」封裝成 MCP server,以標準協議把工具能力暴露給選片 agent,取代硬編碼整合。** 重點是「不重寫功能,用 MCP 暴露既有能力」。stdio 本地 server(同容器子行程,部署影響小)。⚠️ MCP 失敗必須 fallback 回直接呼叫,USE_MCP 開關可退回現狀——發片穩定性優先於架構潮度。分階段:server→client→整合→驗 fallback。MCP SDK 更新快,依當前官方文件實作,不確定就停下來問,別照概念碼硬套。目標:讓米米財經的 agent 與資料源透過 MCP 解耦,對齊「工具暴露 / 結構化 context 共享 / 無硬編碼整合」的架構。

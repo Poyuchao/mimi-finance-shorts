@@ -71,8 +71,16 @@ class LLMService(ABC):
         raise LLMResponseError(f"LLM 回傳解析失敗(retry 後):{last_err}")
 
     # ── 第一步:選片 ──────────────────────────────
-    def select_top_news(self, candidates: list[dict], n: int | None = None) -> list[dict]:
-        """從候選挑 n 則,回傳選中的候選(附 reason),保序為 LLM 給的順序。"""
+    def select_top_news(
+        self,
+        candidates: list[dict],
+        n: int | None = None,
+        recent: list[dict] | None = None,
+    ) -> list[dict]:
+        """從候選挑 n 則,回傳選中的候選(附 reason),保序為 LLM 給的順序。
+
+        recent:🆕 UPDATE 8 —— 最近已發過的新聞(供 agent 參考,避免重複報導同一事件)。
+        """
         n = n if n is not None else config.NEWS_COUNT
         if not candidates:
             logger.warning("候選為空,無可挑選")
@@ -82,7 +90,7 @@ class LLMService(ABC):
                         len(candidates), n)
             return [{**c, "reason": "候選不足,直接保留"} for c in candidates]
 
-        prompt = _build_select_prompt(candidates, n)
+        prompt = _build_select_prompt(candidates, n, recent=recent)
         data = self._generate_json(prompt)
 
         selected = data.get("selected", [])
@@ -170,12 +178,25 @@ class OpenAIService(LLMService):
 
 
 # ── prompt 組裝 ───────────────────────────────────
-def _build_select_prompt(candidates: list[dict], n: int) -> str:
+def _build_select_prompt(candidates: list[dict], n: int,
+                         recent: list[dict] | None = None) -> str:
     lines = []
     for i, c in enumerate(candidates):
         text = (c.get("clean_text") or "")[:200]
         lines.append(f"[{i}] 來源:{c['source']}\n    標題:{c['title']}\n    內文:{text}")
     listing = "\n".join(lines)
+
+    # 🆕 UPDATE 8:把「最近已發過的新聞」帶進來給 agent 參考
+    recent_block = ""
+    if recent:
+        recent_lines = "\n".join(f"  ({r.get('run_date','')}) {r.get('title','')}"
+                                 for r in recent[:20])
+        recent_block = f"""
+
+★ 這幾天已經發過的新聞(僅供參考)★
+{recent_lines}
+→ 若候選中有「和上面同一事件的重複報導」,請降權、盡量不要再選;
+  但如果該事件今天有「重大新進展」,仍然可以選。"""
 
     return f"""你是台灣財經股市短影音的選題編輯。以下是今天篩出的 {len(candidates)} 則候選新聞。
 請挑出「最重要、最有影響力」的 {n} 則來做股市短影音。
@@ -219,7 +240,7 @@ def _build_select_prompt(candidates: list[dict], n: int) -> str:
    不要因為某則有漂亮數字、而某則(重大但尚未發生)還沒數字,就把重大的那則擠掉。
 
 候選新聞:
-{listing}
+{listing}{recent_block}
 
 ★★★ 送出答案前,務必做這道「最終檢查」★★★
 在你決定好 {n} 則之後、回覆之前,請逐條自我檢查;任何一條不通過,就回頭換掉那一則:

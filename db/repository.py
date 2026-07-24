@@ -6,8 +6,9 @@ save_run():一次執行 → 寫入 1 筆 Run + N 筆 Candidate(候選 ~10 篇全
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from db.models import Candidate, Run
@@ -67,6 +68,23 @@ def save_run(
         run.id, len(candidates or []), len(selected_links),
     )
     return run.id
+
+
+def get_recent_selections(session: Session, days: int = 7) -> list[dict]:
+    """🆕 UPDATE 8:查過去 N 天「已被選用」的新聞(給 agent 參考最近發過什麼)。
+
+    回 [{title, link, run_date}, ...];目前只供參考,不做強制去重。
+    """
+    cutoff = date.today() - timedelta(days=days)
+    rows = session.execute(
+        select(Candidate.title, Candidate.link, Run.run_date)
+        .join(Run, Candidate.run_id == Run.id)
+        .where(Run.run_date >= cutoff, Candidate.selected.is_(True))
+        .order_by(Run.run_date.desc())
+    ).all()
+    return [
+        {"title": t, "link": l, "run_date": str(d)} for t, l, d in rows
+    ]
 
 
 if __name__ == "__main__":

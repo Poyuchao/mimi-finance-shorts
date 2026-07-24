@@ -5,8 +5,9 @@
 
 > 個人作品集專案。目標:整條 pipeline 跑通、能自動產出一支影片。
 >
-> **版本**:字卡版(MVP)→ UPDATE 1(米米全程)→ **UPDATE 2 節目化**(米米只在頭尾、新聞回純字卡)。
-> 用 `config.USE_MIMI` 一鍵在「米米頭尾版」與「純字卡版」之間切換。
+> **版本**:MVP(字卡版)→ U1 米米全程 → **U2 節目化**(米米只在頭尾)→ U3 YouTube 自動上傳
+> → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)。
+> 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
 
 ---
 
@@ -32,13 +33,16 @@
 ## Pipeline
 
 ```
-① 抓 RSS 財經新聞(3 來源:ETtoday / 自由時報 / 風傳媒)
-② 解析 + 篩股市 + 清洗(剝 HTML、股市關鍵字 + 排除中港股)
-③ 收斂候選池(去重 + 排序 → ~10 則)
-④a LLM 選片:從候選挑 3 則「最重要」的 + 理由(硬門檻:必須直接跟股市有關)
+①②③ 取得候選池 —— 走 MCP:呼叫 fetch_finance_news + get_recent_selections
+      (MCP 掛掉自動 fallback 回下面的直接呼叫,發片不中斷)
+   ① 抓 RSS 財經新聞(3 來源:ETtoday / 自由時報 / 風傳媒)
+   ② 解析 + 篩股市 + 清洗(剝 HTML、股市關鍵字 + 排除中港股)
+   ③ 收斂候選池(去重 + 排序 → ~10 則)
+④a LLM 選片:從候選挑 3 則「最重要」的 + 理由(硬門檻:必須直接跟股市有關;
+    並帶入近 7 天已發過的新聞 → 避免重複報導同一事件)
 ④b LLM 改寫:口播稿(親切但專業)+ headline + 結構化 highlight + video_title + hashtag
 ④c 每則生 AI 示意圖(Gemini,Q版米米人物;失敗即 fallback 純字卡)
-④d AI 審圖(擋編造數字/亂碼/真人/企業logo);不過 → 重生一次 → 再不過 → 退純字卡
+④d AI 審圖(擋編造數字/亂碼/真人/嚴重離題);不過 → 重生一次 → 再不過 → 退純字卡
 ⑤ TTS 配音:3 則新聞 script + 開場白/收尾旁白
 ⑥ 生字卡:封面 / 新聞卡(有圖版=AI圖+資訊 / 無圖版=純字卡+數字視覺化)/ 開場白·收尾
 ⑦ 影片合成(MoviePy):封面 + 米米開場白 + 3 新聞 + 米米收尾 → output/final.mp4
@@ -55,7 +59,8 @@
 - **封面動態標題**:用 LLM 的 `video_title`,永遠對得上當天內容。
 - **LLM 分兩步「先選再改寫」**:先挑最有影響力的新聞(市場級/結構性優先),再改寫成親切但專業的口播稿。
 - **LLM 可替換介面**:`LLMService` 抽象介面,目前 OpenAI `gpt-4o-mini`,換 Gemini/Claude 只需加 class。
-- **容錯**:任一 RSS 來源失敗/回空 → skip 該來源、其他繼續;某段米米素材缺 → 該段退純字卡,都不讓整支崩。
+- **MCP Server**:把「抓新聞 / 查歷史選片」以 [Model Context Protocol](https://modelcontextprotocol.io) 標準暴露成 tools —— 同一份 server,**pipeline 與 Claude Desktop 都能用**。
+- **全鏈路容錯**:RSS 單一來源失敗 → skip 其他繼續;生圖/審圖失敗 → 退純字卡;上傳失敗 → 保留 mp4;寫 DB 失敗 → 只 log;**MCP 失敗 → fallback 直接呼叫**。任何一環都不讓影片發不出去。
 - **誠實文案**:slogan 定調「回顧財經重點」(非分析教學),收斂在 `config.CHANNEL_SLOGAN`。
 
 ---
@@ -70,6 +75,10 @@
 | TTS | edge-tts(`zh-TW-HsiaoChenNeural`) |
 | 字卡 | Jinja2 + Playwright(chromium) |
 | 影片 | MoviePy(CompositeVideoClip 疊層,底層 ffmpeg) |
+| 生圖 / 審圖 | google-genai(Gemini;`-image` 變體生圖、vision 模型審圖) |
+| 上傳 | google-api-python-client + OAuth 2.0(YouTube Data API v3) |
+| 資料庫 | SQLAlchemy 2.0 + SQLite |
+| 工具協議 | `mcp`(Model Context Protocol,FastMCP + stdio) |
 | 米米素材 | AI 圖生影片工具(如 DeeVid)手動預生成,直式 9:16 |
 
 ---
@@ -100,7 +109,10 @@
 ├── db/                  # ⑨ 資料庫記錄(SQLAlchemy)
 │   ├── models.py        #   Run 1 ──< Candidate
 │   ├── database.py      #   engine / session / init_db
-│   └── repository.py    #   save_run()
+│   └── repository.py    #   save_run() / get_recent_selections()
+├── mcp_server/          # 🔌 MCP Server(把工具能力標準化暴露)
+│   └── finance_news_server.py  # FastMCP:fetch_finance_news / get_recent_selections
+├── mcp_client.py        # 🔌 MCP Client(啟 server 子行程 + call_tool;可單獨跑測試)
 ├── query_runs.py        # 查詢 DB:看每次「從候選選了哪 3 則、為什麼」
 ├── assets/mimi/         # 🐱 米米素材(手動放,重複用)
 │   ├── intro.mp4        #   開場白
@@ -183,7 +195,7 @@ python main.py
 - prompt **用中文寫** → 圖上中文才正確(英文 prompt 會中文亂碼)。
 - 用「**illustration / 插畫**」而非「infographic」→ 才不會硬塞一堆標籤文字。
 - **禁止圖上出現任何具體數字/財務數據**(AI 一定會編造假的 EPS、毛利率)。
-- **禁止畫公司 logo —— 即使新聞主角就是該公司**(否則講台積電就會畫 tsmc 商標)。
+- **真實企業 logo 允許出現**(編輯性使用)。⚠️ 這條**生圖與審圖兩邊都要改** —— 只放寬生圖端,圖照樣會被審圖擋掉。
 - **必須用 `image_config(aspect_ratio="16:9")` 強制橫式**(Gemini 不保證遵守 prompt 的「橫幅」,回直式會撐爆卡片)。
 - 有圖 → YT 描述自動加「部分畫面為 AI 生成示意圖」。
 
@@ -198,8 +210,9 @@ python main.py
 
 | 級別 | 項目 | 處置 |
 |------|------|------|
-| 🔴 **blocking**(傷可信度) | 編造的財務數據(EPS/毛利率/%/日期)、亂碼不成句、真人臉孔、真實企業 logo、嚴重離題 | **擋** → 重生 / 退純字卡 |
+| 🔴 **blocking**(傷可信度) | 編造的財務數據(EPS/毛利率/%/日期)、亂碼不成句、真人臉孔、嚴重離題或扭曲新聞 | **擋** → 重生 / 退純字卡 |
 | 🟡 **minor**(純美觀) | 標籤重複、標籤過多、圖表裝飾刻度、構圖美感 | **放行**(只記 log) |
+| ☑ **明確放行** | 真實企業 logo(編輯性使用)、台北 101 等地標與通用符號 | **不算違規** |
 
 > 💡 **為什麼一定要分級**:不分級的話,會為了「標籤重複」這種小事把好圖整張丟掉,而重生後品質常常更糟 → 變成「又花錢又沒圖」。**審查員該守的是可信度底線,不是美感。**
 
@@ -248,7 +261,70 @@ python query_runs.py 5         # 看 run_id=5 的候選池 + 選片理由
 也可用 [DB Browser for SQLite](https://sqlitebrowser.org/) 開 `mimi.db` 瀏覽 `runs` / `candidates` 兩張表。
 
 > 💡 **實效**:上線第一天就靠它抓到「同一次選了兩則力積電」的選片問題(違反題材分散),並據此修好了 select prompt。
-> `candidates.link` 已存並建索引 → **未來要做跨天去重,資料就在**。
+> `candidates.link` 已存並建索引 → 這份資料已由 MCP 的 `get_recent_selections` 回饋進選片 prompt(見下節)。
+
+---
+
+## MCP Server(工具能力標準化)
+
+把「抓財經新聞」和「查歷史選片」用 **[Model Context Protocol](https://modelcontextprotocol.io)** 標準暴露成 tools。
+**同一份 server,兩個完全不同的 client 都能用,server 一行都不用改:**
+
+| Client | 誰啟動 server | 用途 |
+|---|---|---|
+| `main.py`(經 `mcp_client.py`) | pipeline 自己 | 每天自動發片 |
+| **Claude Desktop** | app 自己 | 手動聊天、實驗選片邏輯 |
+
+**提供的 tools:**
+
+| Tool | 參數 | 回傳 |
+|---|---|---|
+| `fetch_finance_news` | `pool_size`(預設 10) | 候選新聞 list(標題/來源/連結/內文摘要) |
+| `get_recent_selections` | `days`(預設 7) | 近 N 天已發布過的新聞(供 agent 避免重複報導) |
+
+```
+Claude Desktop / main.py
+        │  ① 啟動子行程  venv\python.exe finance_news_server.py
+        │  ② stdin/stdout 互丟 JSON-RPC(不走網路,資料不出本機)
+        ▼
+finance_news_server.py  ──呼叫既有模組──> fetch_rss / parse_filter / select_news / repository
+```
+
+**設計重點:**
+- **不重寫任何功能** —— tool 內部只是呼叫既有模組,MCP 純粹是「多一層標準化介面」。
+- **fallback 是硬需求**:`main.py` 用 try/except 包住,MCP 掛掉就走原本的直接呼叫,**發片不中斷**(已實測:把 server 路徑指到不存在的檔,pipeline 照跑)。
+- `USE_MCP = False` → 完全等同 UPDATE 6 現狀。
+
+**⚠️ 兩個踩過的坑:**
+1. **server 端絕對不能 `print`** —— stdout 是 MCP 協議通道,任何多餘輸出都會打壞協議。log 一律 `stream=sys.stderr`。
+2. **client 要用 `sys.executable` + 絕對路徑 + `cwd`** —— 寫死 `"python"` 會抓到 Microsoft Store 的 python stub;沒設 `cwd` 則 `sqlite:///mimi.db` 這種相對路徑找不到 DB。
+
+### 接到 Claude Desktop
+
+在 `claude_desktop_config.json` 加入(**路徑換成你自己的**):
+
+```json
+{
+  "mcpServers": {
+    "finance-news": {
+      "command": "C:\\...\\venv\\Scripts\\python.exe",
+      "args": ["C:\\...\\mcp_server\\finance_news_server.py"],
+      "cwd": "C:\\...\\ai internet influencer",
+      "env": { "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1" }
+    }
+  }
+}
+```
+
+> 設定檔位置:一般版在 `%APPDATA%\Claude\`;**Microsoft Store 版**則在
+> `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`。
+> 改完要**完全結束 app**(系統匣右鍵 Quit,不是關視窗)再重開。
+> ⚠️ app 結束時會重寫整份 config —— **請先關 app 再改檔**,否則會被覆蓋掉。
+
+接上後可直接在 Claude Desktop 問「抓一下今天的財經新聞候選」「幫我挑 3 則最重要的並說明理由」——
+等於一個**不用跑整條 pipeline 就能測選片邏輯的實驗場**,調好再把結論寫回 `llm_service.py` 的 prompt。
+
+單獨測試 client:`python mcp_client.py`
 
 ---
 
@@ -264,6 +340,7 @@ python query_runs.py 5         # 看 run_id=5 的候選池 + 選片理由
 - **生圖**:`USE_AI_IMAGE`、`IMAGE_MODEL`、`IMAGE_ASPECT`(16:9)、`IMAGE_TIMEOUT`(120)、`IMAGE_RETRY`、`IMAGE_DIR`、`IMAGE_DISCLAIMER`、`MIMI_REF_IMAGE`、`GEMINI_API_KEY`(.env)。
 - **審圖**:`USE_IMAGE_REVIEW`、`REVIEW_MODEL`、`REVIEW_MAX_RETRY`(1)、`REVIEW_TIMEOUT`(60)。
 - **DB**:`DB_URL`(預設 `sqlite:///mimi.db`)。
+- **MCP**:`USE_MCP`(True;False = 走直接呼叫)、`DEDUP_DAYS`(7,查幾天歷史給選片 agent 參考)。
 
 ---
 
@@ -287,6 +364,7 @@ python query_runs.py 5         # 看 run_id=5 的候選池 + 選片理由
 - Instagram 上傳:Graph API(商業帳號門檻高)。
 - 多 LLM:`llm_service` 已抽象,加 class 即可換 Gemini / Claude。
 - 轉場 / 背景音樂:`video.py` 加效果。
+- MCP 再擴充:把生圖、上傳也包成 tool,讓 agent 自主決定整條發片流程。
 
 > 各階段變更由架構規劃另出「修改指引」,整合進 `FINANCE_VIDEO_DEVELOPMENT.md` 後再據以實作。
 
