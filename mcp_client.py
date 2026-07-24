@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
@@ -50,6 +51,23 @@ def _parse(result) -> Any:
     return None
 
 
+def _restore_datetimes(candidates: list[dict]) -> list[dict]:
+    """把 MCP 回傳的 published(isoformat 字串)還原成 datetime 物件。
+
+    ★ 為什麼需要:JSON 不能放 datetime,所以 server 端一定要轉字串;
+      但 DB 的 Candidate.published 是 DateTime 欄位,吃到字串會整筆 save_run 失敗
+      →「影片照發但沒記錄」的無聲漏記。轉換責任放在 client 邊界最合適。★
+    """
+    for c in candidates:
+        pub = c.get("published")
+        if isinstance(pub, str):
+            try:
+                c["published"] = datetime.fromisoformat(pub)
+            except ValueError:
+                c["published"] = None      # 格式怪就當沒有,不因記錄欄位擋下發片
+    return candidates
+
+
 async def fetch_candidates_via_mcp(
     pool_size: int | None = None,
     dedup_days: int | None = None,
@@ -69,7 +87,7 @@ async def fetch_candidates_via_mcp(
             logger.info("MCP 可用工具:%s", [t.name for t in tools.tools])
 
             res = await session.call_tool("fetch_finance_news", {"pool_size": pool_size})
-            candidates = _parse(res) or []
+            candidates = _restore_datetimes(_parse(res) or [])
 
             rec = await session.call_tool("get_recent_selections", {"days": dedup_days})
             recent = _parse(rec) or []

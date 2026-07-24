@@ -147,7 +147,14 @@ def run(platform: str = "ig") -> str:
         finally:
             session.close()
     except Exception as exc:  # noqa: BLE001 — 寫 DB 失敗不能拖垮發片
-        logger.warning("寫入 DB 失敗(不影響發片):%s", exc)
+        # ★ 影片照發,但要「叫得夠大聲」★
+        #   曾經因為只印一行 warning,連續 3 天沒記錄卻沒人發現(MCP 的 published
+        #   是字串、DB 欄位是 DateTime)。容錯不等於靜音。
+        logger.exception("寫入 DB 失敗:%s", exc)
+        print(f"\n{'!' * 60}")
+        print(f"  ⚠️ 寫入 DB 失敗,這次執行沒有留下選片記錄:{exc}")
+        print("     影片不受影響(已產出/已上傳),但 query_runs.py 查不到這次。")
+        print(f"{'!' * 60}")
 
     dt = time.time() - t0
     print(f"\n{'=' * 60}")
