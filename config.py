@@ -88,6 +88,7 @@ YT_CATEGORY_ID    = "25"          # 25=News & Politics
 YT_TAGS           = ["財經", "股市", "台股", "美股", "投資", "米米財經", "財經新聞"]
 YT_CLIENT_SECRETS = "client_secrets.json"
 YT_TOKEN_FILE     = "token.json"
+YT_TOKEN_READONLY = "token_readonly.json"   # 🆕 UPDATE 10:讀觀看數用(唯讀,獨立 token)
 YT_DISCLAIMER     = "本內容僅供參考,非投資建議。"
 YT_TITLE_HASHTAGS = "#Shorts #米米財經 #台股"   # 標題固定接在後面
 

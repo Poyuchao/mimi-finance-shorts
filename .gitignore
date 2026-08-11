@@ -3,6 +3,7 @@
 client_secrets.json
 client_secrets.json.json
 token.json
+token_readonly.json
 
 # python
 venv/

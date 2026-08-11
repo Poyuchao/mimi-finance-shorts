@@ -30,14 +30,15 @@ def show_list(session, limit: int = 15) -> None:
         return
 
     print(f"\n{LINE}\n最近 {len(runs)} 次執行\n{LINE}")
-    print(f"{'run':>4}  {'日期':<12} {'狀態':<8} {'候選':>4} {'選中':>4}  影片標題")
+    print(f"{'run':>4}  {'日期':<12} {'狀態':<8} {'候選':>4} {'選中':>4} {'觀看':>6}  影片標題")
     print("-" * 78)
     for r in runs:
         n_all = len(r.candidates)
         n_sel = sum(1 for c in r.candidates if c.selected)
         title = (r.video_title or "-")[:28]
+        views = r.view_count if r.view_count is not None else "-"   # 🆕 UPDATE 10
         print(f"{r.id:>4}  {str(r.run_date):<12} {r.status or '-':<8} "
-              f"{n_all:>4} {n_sel:>4}  {title}")
+              f"{n_all:>4} {n_sel:>4} {str(views):>6}  {title}")
         if r.youtube_url:
             print(f"{'':>4}  → {r.youtube_url}")
 
@@ -59,6 +60,9 @@ def show_run(session, run_id: int | None = None) -> None:
         print(f"連結:{run.youtube_url}")
     print(f"候選 {len(run.candidates)} 篇,LLM 選中 "
           f"{sum(1 for c in run.candidates if c.selected)} 篇")
+    if run.view_count is not None:   # 🆕 UPDATE 10:觀看數快照
+        print(f"觀看 {run.view_count}、讚 {run.like_count}、留言 {run.comment_count}"
+              f"(撈取時間 {run.stats_updated_at})")
     print(LINE)
 
     # 選中的排前面(依 position),未選的排後面

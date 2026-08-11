@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import time
 
 import config
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # 只要「上傳」權限
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# 🆕 UPDATE 10:讀觀看數要「唯讀」權限(與上傳分開一把 token,不動既有上傳授權)
+READONLY_SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
 
 # 這些 HTTP 狀態碼可重試(指數退避)
 _RETRIABLE_STATUS = {500, 502, 503, 504}
@@ -116,6 +119,79 @@ def upload_video(youtube, file_path: str, metadata: dict) -> str:
     video_id = response["id"]
     logger.info("上傳完成 video_id=%s", video_id)
     return video_id
+
+
+# ── 🆕 UPDATE 10:讀觀看數(唯讀;寫入類維運,不上 MCP)─────────────
+def get_read_service():
+    """回傳「唯讀」的 YouTube service(讀觀看數用)。
+
+    ★ 用獨立 token(config.YT_TOKEN_READONLY),不動既有上傳 token。★
+    首次呼叫會開瀏覽器,要一次 youtube.readonly 同意(之後讀 token 續用)。
+    """
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    creds = None
+    token_path = config.YT_TOKEN_READONLY
+
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, READONLY_SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("readonly token 過期,用 refresh_token 續期")
+            creds.refresh(Request())
+        else:
+            if not os.path.exists(config.YT_CLIENT_SECRETS):
+                raise FileNotFoundError(
+                    f"找不到 {config.YT_CLIENT_SECRETS}(讀觀看數需要 OAuth 憑證)。"
+                )
+            logger.info("首次讀取授權:開瀏覽器同意 youtube.readonly…")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                config.YT_CLIENT_SECRETS, READONLY_SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+
+        with open(token_path, "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+        logger.info("已存 readonly token → %s", token_path)
+
+    return build("youtube", "v3", credentials=creds)
+
+
+def extract_video_id(url: str) -> str | None:
+    """從 YouTube 網址抽 11 碼 video_id(youtu.be / watch?v= / shorts/)。"""
+    if not url:
+        return None
+    m = re.search(r"(?:youtu\.be/|watch\?v=|/shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def fetch_video_stats(youtube, video_id: str) -> dict:
+    """撈單支影片的統計:回 {view_count, like_count, comment_count}(缺的為 None)。
+
+    ★ 打 YouTube API(有副作用)→ 屬「寫入/維運」類,由 refresh_stats 直接呼叫,不上 MCP。★
+    影片不存在/私人 → 回 {}(由呼叫端決定怎麼處理,不 raise)。
+    """
+    resp = youtube.videos().list(part="statistics", id=video_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        return {}
+    st = items[0].get("statistics", {})
+
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None   # likeCount 可能被隱藏、commentCount 可能關閉
+
+    return {
+        "view_count": _int(st.get("viewCount")),
+        "like_count": _int(st.get("likeCount")),
+        "comment_count": _int(st.get("commentCount")),
+    }
 
 
 def build_youtube_metadata(llm_result: dict, has_ai_image: bool = False) -> dict:

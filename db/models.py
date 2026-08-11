@@ -38,6 +38,12 @@ class Run(Base):
     video_title = Column(String, nullable=True)
     youtube_url = Column(String, nullable=True)
 
+    # 🆕 UPDATE 10:觀看數「快照」(由 refresh_stats 定期更新,非即時)
+    view_count = Column(Integer, nullable=True)
+    like_count = Column(Integer, nullable=True)
+    comment_count = Column(Integer, nullable=True)
+    stats_updated_at = Column(DateTime, nullable=True)   # 這批數字是何時撈的
+
     candidates = relationship(
         "Candidate", back_populates="run", cascade="all, delete-orphan"
     )

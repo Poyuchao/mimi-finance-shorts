@@ -148,6 +148,40 @@ def get_run_detail(run_id: int) -> dict[str, Any]:
         session.close()
 
 
+@app.tool()
+def get_video_stats(limit: int = 10) -> list[dict[str, Any]]:
+    """【觀看表現 · 來自 DB 快照】查各支已發布影片的觀看數 / 讚 / 留言,依觀看數由高到低排序。
+
+    什麼時候用:
+      • 使用者問「哪支影片觀看數最多 / 前幾名 / 表現最好」時。
+      • 想比較不同影片的觀看表現時。
+      • (查「某一次的完整選片 + 該支觀看數」用 get_run_detail;本工具是跨影片排名。)
+
+    ⚠️ 這是「DB 快照」,不是即時數字:
+      • 回的是「上次 refresh_stats 撈的觀看數」,每則附 stats_updated_at 標明撈取時間。
+      • 只列「有觀看數」的影片(剛發片還沒撈、或影片已刪的不會出現)。
+      • 要最新數字需先在本機跑 refresh_stats(agent 無法觸發,純唯讀)。
+
+    Args:
+        limit: 回前幾名(預設 10;依觀看數由高到低)
+
+    Returns:
+        [{run_id, run_date, video_title, youtube_url,
+          view_count, like_count, comment_count, stats_updated_at}, ...]
+    """
+    from db import repository
+    from db.database import get_session, init_db
+
+    init_db()
+    session = get_session()
+    try:
+        rows = repository.get_video_stats(session, limit=limit)
+        logger.info("get_video_stats(limit=%d)→ %d 支有觀看數", limit, len(rows))
+        return rows
+    finally:
+        session.close()
+
+
 @app.resource("runs://latest")
 def latest_run_summary() -> str:
     """最近一次執行的摘要:日期、候選數、選中的三則標題。

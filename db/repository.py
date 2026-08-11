@@ -6,7 +6,7 @@ save_run():一次執行 → 寫入 1 筆 Run + N 筆 Candidate(候選 ~10 篇全
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -107,6 +107,57 @@ def get_recent_selections(session: Session, days: int = 7) -> list[dict]:
     ]
 
 
+def get_video_stats(session: Session, limit: int = 10) -> list[dict]:
+    """🆕 UPDATE 10:查各支「已有觀看數」的影片,依觀看數由高到低。
+
+    給 agent 回答「哪支觀看最多 / 前幾名」用。★唯讀,讀 DB 快照(非即時)。★
+    只回有 view_count 的(剛發片還沒撈、或影片已刪的不列)。
+    回 [{run_id, run_date, video_title, youtube_url,
+         view_count, like_count, comment_count, stats_updated_at}, ...]
+    """
+    q = (
+        select(
+            Run.id, Run.run_date, Run.video_title, Run.youtube_url,
+            Run.view_count, Run.like_count, Run.comment_count, Run.stats_updated_at,
+        )
+        .where(Run.view_count.isnot(None))
+        .order_by(Run.view_count.desc())
+    )
+    if limit:
+        q = q.limit(limit)
+    rows = session.execute(q).all()
+    return [
+        {
+            "run_id": rid,
+            "run_date": str(d),
+            "video_title": title,
+            "youtube_url": url,
+            "view_count": vc,
+            "like_count": lc,
+            "comment_count": cc,
+            "stats_updated_at": str(sa) if sa else None,
+        }
+        for rid, d, title, url, vc, lc, cc, sa in rows
+    ]
+
+
+def update_run_stats(session: Session, run_id: int, stats: dict) -> bool:
+    """🆕 UPDATE 10:把撈到的觀看數寫回 Run(快照,附撈取時間)。
+
+    stats:{view_count, like_count, comment_count}(缺的為 None)。
+    回傳是否有更新到(找不到 run_id → False)。★寫入類,不上 MCP。★
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        return False
+    run.view_count = stats.get("view_count")
+    run.like_count = stats.get("like_count")
+    run.comment_count = stats.get("comment_count")
+    run.stats_updated_at = datetime.now()   # ★記下「這批數字何時撈的」★
+    session.commit()
+    return True
+
+
 def get_run_detail(session: Session, run_id: int) -> dict | None:
     """🆕 UPDATE 9:取單次執行的完整選片細節(供稽核 agent 深挖用)。
 
@@ -139,6 +190,11 @@ def get_run_detail(session: Session, run_id: int) -> dict | None:
         "status": run.status,
         "video_title": run.video_title,
         "youtube_url": run.youtube_url,
+        # 🆕 UPDATE 10:觀看數快照(可能為 None:剛發片/影片已刪)
+        "view_count": run.view_count,
+        "like_count": run.like_count,
+        "comment_count": run.comment_count,
+        "stats_updated_at": str(run.stats_updated_at) if run.stats_updated_at else None,
         "candidates": [
             {
                 "title": c.title,

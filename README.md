@@ -6,7 +6,8 @@
 > 個人作品集專案。目標:整條 pipeline 跑通、能自動產出一支影片。
 >
 > **版本**:MVP(字卡版)→ U1 米米全程 → **U2 節目化**(米米只在頭尾)→ U3 YouTube 自動上傳
-> → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)。
+> → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)
+> → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)。
 > 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
 
 ---
@@ -104,16 +105,19 @@
 │   ├── news_card.html                      # 新聞卡(有圖版 / 無圖版數字視覺化)
 │   ├── opening_card.html / closing_card.html  # 開場白 / 收尾(透明泡泡卡)
 │   └── outro_card.html                     # USE_MIMI=False 的純字卡結尾
-├── publisher/           # YouTube 上傳
-│   └── youtube.py       #   OAuth 認證 + videos.insert
+├── publisher/           # YouTube 上傳 + 讀觀看數
+│   └── youtube.py       #   OAuth 上傳 / 讀取(唯讀)+ fetch_video_stats(U10)
 ├── db/                  # ⑨ 資料庫記錄(SQLAlchemy)
-│   ├── models.py        #   Run 1 ──< Candidate
-│   ├── database.py      #   engine / session / init_db
-│   └── repository.py    #   save_run() / get_recent_selections()
-├── mcp_server/          # 🔌 MCP Server(把工具能力標準化暴露)
+│   ├── models.py        #   Run 1 ──< Candidate(Run 含觀看數欄位 U10)
+│   ├── database.py      #   engine / session / init_db + 輕量遷移(U10)
+│   └── repository.py    #   save_run / get_recent_selections / get_run_detail / get_video_stats
+├── mcp_server/          # 🔌 MCP Server(把唯讀能力標準化暴露)
 │   └── finance_news_server.py  # FastMCP:fetch_finance_news / get_recent_selections
+│                        #          get_run_detail / get_video_stats + resource runs://latest
 ├── mcp_client.py        # 🔌 MCP Client(啟 server 子行程 + call_tool;可單獨跑測試)
-├── query_runs.py        # 查詢 DB:看每次「從候選選了哪 3 則、為什麼」
+├── agent.py             # 🤖 選片品質稽核 agent(U9,function calling 決策迴圈,純唯讀)
+├── refresh_stats.py     # 📊 撈 YouTube 觀看數 → 更新 DB(U10,寫入類維運)
+├── query_runs.py        # 查詢 DB:每次「選了哪 3 則、為什麼」+ 觀看數
 ├── assets/mimi/         # 🐱 米米素材(手動放,重複用)
 │   ├── intro.mp4        #   開場白
 │   ├── outro.mp4        #   收尾
@@ -262,6 +266,7 @@ python query_runs.py 5         # 看 run_id=5 的候選池 + 選片理由
 
 > 💡 **實效**:上線第一天就靠它抓到「同一次選了兩則力積電」的選片問題(違反題材分散),並據此修好了 select prompt。
 > `candidates.link` 已存並建索引 → 這份資料已由 MCP 的 `get_recent_selections` 回饋進選片 prompt(見下節)。
+> `runs` 另存每支影片的觀看數(U10,見「觀看數追蹤」),`query_runs.py --list` 會多顯示一欄「觀看」。
 
 ---
 
@@ -275,12 +280,19 @@ python query_runs.py 5         # 看 run_id=5 的候選池 + 選片理由
 | `main.py`(經 `mcp_client.py`) | pipeline 自己 | 每天自動發片 |
 | **Claude Desktop** | app 自己 | 手動聊天、實驗選片邏輯 |
 
-**提供的 tools:**
+**提供的 tools（唯讀能力,暴露給 agent）:**
 
 | Tool | 參數 | 回傳 |
 |---|---|---|
-| `fetch_finance_news` | `pool_size`(預設 10) | 候選新聞 list(標題/來源/連結/內文摘要) |
-| `get_recent_selections` | `days`(預設 7) | 近 N 天已發布過的新聞(供 agent 避免重複報導) |
+| `fetch_finance_news` | `pool_size`(預設 10) | 即時候選新聞 list(★未選中、無理由★) |
+| `get_recent_selections` | `days`(預設 7) | 近 N 天「真正選中」的新聞 + 選片理由(來自 DB)|
+| `get_run_detail` | `run_id` | 某次執行的完整候選 + 選中 3 則 + 理由 + 該支觀看數 |
+| `get_video_stats` | `limit`(預設 10) | 各支影片觀看數/讚/留言,依觀看排序(🆕 U10)|
+
+外加 MCP **Resource** `runs://latest`(最近一次選片摘要),展示 tools 以外的 primitive。
+
+> 🔴 **MCP 邊界原則:唯讀上、寫入不上。** 上表都是「查詢」;會打外部 API / 寫 DB 的動作
+> (`save_run`、撈觀看數 `fetch_video_stats`)**留在 pipeline 直接呼叫,不上 MCP** —— 才能維持 agent 的「純唯讀」保證。
 
 ```
 Claude Desktop / main.py
@@ -328,6 +340,50 @@ finance_news_server.py  ──呼叫既有模組──> fetch_rss / parse_filter
 
 ---
 
+## 選片品質稽核 Agent（U9,選用）
+
+一個**獨立、純唯讀**的終端機 CLI:用自然語言問歷史選片品質,由 **LLM(OpenAI function calling)自己決定**呼叫哪些 MCP 工具、呼叫幾次,做多步推理後產出稽核報告。
+
+```powershell
+python agent.py
+```
+```
+問題> 這週選片品質有沒有問題?有問題要指出是哪一次
+  [工具] get_recent_selections(days=7)   ← 第 1 輪  先看全貌
+  [工具] get_run_detail(run_id=8)         ← 第 2 輪  發現可疑,深挖
+  [工具] get_run_detail(run_id=7)         ← 第 2 輪
+  → 產出 JSON 稽核報告(主體重複 / 來源偏食 + 建議)
+問題> 哪支影片觀看數最多?          → get_video_stats(limit=1)（🆕 U10）
+```
+
+- **這是 workflow 與 agent 的分水嶺**:pipeline 步驟由人寫死(線性);agent 呼叫哪個工具、幾次、何時停,由 LLM 決定(迴圈)。
+- **防失控**:`AGENT_MAX_ITERATIONS=5` 硬上限;工具失敗回結構化錯誤、不中斷;弄壞 MCP server → CLI 報錯不 crash。
+- **不碰發片流程**:純唯讀,`main.py` 完全不受影響。
+
+> 💡 踩過的兩個真實 bug(都寫成雙語工程日誌 `INTERVIEW_NOTES.md`):
+> ① MCP 序列化邊界造成 DB 無聲漏記(容錯 ≠ 靜音);② agent 把「即時候選」當「已選中」並捏造理由(工具語意歧義,非模型笨)。
+
+---
+
+## 觀看數追蹤（U10,選用）
+
+把發布後的觀看數撈回來,和選片紀錄關聯 —— **發布 → 觀測** 的回饋迴圈第一步。
+
+```powershell
+python refresh_stats.py         # 撈所有已上傳影片的觀看數 → 寫進 DB（快照）
+python query_runs.py --list     # 看到多一欄「觀看」
+```
+
+- **寫入端**:`refresh_stats.py` 打 YouTube `videos.list`,把 viewCount/likeCount/commentCount 寫回 `Run`,附 `stats_updated_at`(★記下「這數字何時撈的」★)。
+- **讀取端**:`query_runs.py` 直接看;或問 agent「哪支觀看最多」(走 `get_video_stats`)。
+- **快照 vs 即時**:讀到的是「上次 refresh 的數字」,不是即時 —— 要最新先跑 `refresh_stats.py`。這條紀律和 U8/U9 一脈相承(避免把即時與快照搞混,見上方 bug ②)。
+- **需要唯讀授權**:讀觀看數要 `youtube.readonly` 權限,**與上傳 token 分開**(獨立 `token_readonly.json`)—— 讀取授權出問題也不影響發片。
+- **優雅降級**:影片已刪/私人 → 該支跳過、記 warning,不 crash、不亂寫 0。
+
+**誠實的定位**:目前只做到「觀測 + 留痕」。把觀看表現**回饋進選片**(依題材表現微調選片)是規劃中的下一步 —— 而且刻意定位為「軟性參考」,重要性硬門檻仍優先(避免為衝觀看而 clickbait 化)。
+
+---
+
 ## 設定(config.py)
 
 - `RSS_SOURCES` — 三來源網址與抓法(風傳媒需帶 UA)。
@@ -341,6 +397,8 @@ finance_news_server.py  ──呼叫既有模組──> fetch_rss / parse_filter
 - **審圖**:`USE_IMAGE_REVIEW`、`REVIEW_MODEL`、`REVIEW_MAX_RETRY`(1)、`REVIEW_TIMEOUT`(60)。
 - **DB**:`DB_URL`(預設 `sqlite:///mimi.db`)。
 - **MCP**:`USE_MCP`(True;False = 走直接呼叫)、`DEDUP_DAYS`(7,查幾天歷史給選片 agent 參考)。
+- **稽核 Agent(U9)**:`AGENT_MODEL`、`AGENT_MAX_ITERATIONS`(5)、`AGENT_AUDIT_DEFAULT_DAYS`(7)。
+- **觀看數(U10)**:`YT_TOKEN_READONLY`(讀觀看數的獨立 token 檔)。
 
 ---
 
