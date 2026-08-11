@@ -71,20 +71,86 @@ def save_run(
 
 
 def get_recent_selections(session: Session, days: int = 7) -> list[dict]:
-    """🆕 UPDATE 8:查過去 N 天「已被選用」的新聞(給 agent 參考最近發過什麼)。
+    """🆕 UPDATE 8(U9 補強):查過去 N 天「已被選中/發布」的新聞。
 
-    回 [{title, link, run_date}, ...];目前只供參考,不做強制去重。
+    ★ 這是「選片事實」的權威來源 —— 只回 selected=True 的,且附選片理由。★
+    回 [{run_id, run_date, source, title, link, position, select_reason}, ...]。
+    (U9 補上 run_id / source / position / select_reason,讓 agent 一次就拿到
+     『選了什麼 + 哪一次 + 第幾則 + 為什麼』,不必再多查 get_run_detail。)
     """
     cutoff = date.today() - timedelta(days=days)
     rows = session.execute(
-        select(Candidate.title, Candidate.link, Run.run_date)
+        select(
+            Candidate.run_id,
+            Run.run_date,
+            Candidate.source,
+            Candidate.title,
+            Candidate.link,
+            Candidate.position,
+            Candidate.select_reason,
+        )
         .join(Run, Candidate.run_id == Run.id)
         .where(Run.run_date >= cutoff, Candidate.selected.is_(True))
-        .order_by(Run.run_date.desc())
+        .order_by(Run.run_date.desc(), Candidate.position.asc())
     ).all()
     return [
-        {"title": t, "link": l, "run_date": str(d)} for t, l, d in rows
+        {
+            "run_id": rid,
+            "run_date": str(d),
+            "source": src,
+            "title": t,
+            "link": l,
+            "position": pos,
+            "select_reason": reason,
+        }
+        for rid, d, src, t, l, pos, reason in rows
     ]
+
+
+def get_run_detail(session: Session, run_id: int) -> dict | None:
+    """🆕 UPDATE 9:取單次執行的完整選片細節(供稽核 agent 深挖用)。
+
+    回傳單次執行的所有候選新聞、哪 3 則被選中、每則的選片理由與排序。
+    找不到該 run_id → 回 None(讓上層/agent 自行決定怎麼處理)。
+
+    回傳形狀:
+        {
+          "run_id": int,
+          "run_date": "YYYY-MM-DD",
+          "status": str,
+          "video_title": str | None,
+          "youtube_url": str | None,
+          "candidates": [
+             {"title", "source", "link", "selected", "position", "reason"}, ...
+          ],  # 選中的排前面(依 position),其餘依原順序
+        }
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        return None
+
+    cands = sorted(
+        run.candidates,
+        key=lambda c: (not c.selected, c.position or 99, c.id),
+    )
+    return {
+        "run_id": run.id,
+        "run_date": str(run.run_date),
+        "status": run.status,
+        "video_title": run.video_title,
+        "youtube_url": run.youtube_url,
+        "candidates": [
+            {
+                "title": c.title,
+                "source": c.source,
+                "link": c.link,
+                "selected": bool(c.selected),
+                "position": c.position,
+                "reason": c.select_reason,
+            }
+            for c in cands
+        ],
+    }
 
 
 if __name__ == "__main__":

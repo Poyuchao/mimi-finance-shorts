@@ -8,14 +8,27 @@
 >
 > A log of non-obvious engineering problems from this project, with the debugging process,
 > root cause, and fix. Purpose: a case library of concrete examples for interviews.
+>
+> **本檔分兩部分**:
+> - **Part A — 問題記錄**:實際踩到的 bug + 除錯推理(STAR 案例)。
+> - **Part B — 面試談資 / Talking Points**:概念性的講法與比喻,被問到時能順口說出的版本(含英文)。
 
 ---
 
-## 索引 / Index
+## Part A 索引 / Problem Index
 
 | # | 問題 / Problem | 關鍵字 / Tags |
 |---|---|---|
 | [001](#001) | MCP 序列化邊界造成 DB 無聲漏記 3 天<br>Silent data loss for 3 days at the MCP serialization boundary | `MCP` `serialization` `silent-failure` `observability` `fault-isolation` |
+| [002](#002) | agent 把「即時候選」當成「已選中」並捏造理由<br>Agent reported a live *candidate* as *selected* and fabricated a reason | `agent` `hallucination` `tool-confusion` `prompt-engineering` `failure-modes` |
+
+## Part B 索引 / Talking Points Index
+
+| # | 主題 / Topic | 關鍵字 / Tags |
+|---|---|---|
+| [T1](#T1) | MCP 是什麼 + config 綁 client 不綁 tool<br>What MCP is; config is per-client, not per-tool | `MCP` `interoperability` `no-hard-coded-integration` |
+| [T2](#T2) | 本機版 → 企業級 的對照(stdio → HTTP)<br>Local build → enterprise hardening | `transport` `registry` `auth` `gateway` `observability` |
+| [T3](#T3) | workflow vs agent 的分水嶺(為什麼要決策迴圈)<br>Workflow vs agent; why the decision loop | `agent` `multi-step-reasoning` `guardrails` |
 
 ---
 
@@ -289,6 +302,215 @@ except Exception as exc:
 `Model Context Protocol (MCP) integration` · `Reasoning about failure modes` ·
 `Reliability and resiliency` · `Observability and maintainability` ·
 `Data modeling and persistence` · `Owning software end-to-end`
+
+---
+
+<a id="002"></a>
+## 002 — agent 把「即時候選」當成「已選中」,還捏造了選片理由
+
+**日期**:2026-07-27 · **嚴重度**:中(agent 給出看似可信、實為錯誤的答案)· **定位耗時**:約 10 分鐘
+
+### 🇹🇼 中文版
+
+#### 情境
+選片品質稽核 agent(function calling 決策迴圈)有三個 MCP 工具:兩個查 DB(`get_recent_selections`、
+`get_run_detail`),一個抓即時 RSS(`fetch_finance_news`)。使用者用它問「選片」相關問題。
+
+#### 問題
+使用者發現:agent 報告某則新聞「被選上」,還附了選片理由 —— 但那則**根本沒進今天的影片**。
+
+#### 發現過程(推理路徑)
+不猜,直接查資料:
+1. 用連結和標題去 DB 撈這則 → **0 筆**。它不在 DB 裡,連候選都不是。
+2. 但使用者看到的版本**帶著「選片理由」** → 矛盾點出現:`fetch_finance_news` 回的候選
+   **根本沒有 reason 欄位**,理由只存在於 DB 的 `select_reason`。→ 這個理由是**被捏造的**。
+3. 查今天實際那次執行(run 10)的候選池 → 這則也不在。
+4. 立刻抓一次**即時** RSS → 這則**排第 1**。真相大白:它是「現在」才出現的即時候選,
+   run 10 早上跑時還沒有這則。
+
+#### 根因
+agent 呼叫了 `fetch_finance_news`(即時 RSS)來回答「選了什麼」,把**候選**當成**選中**,
+又因為候選沒有理由,LLM 就**自己生了一個看似合理的理由**。三個概念被混為一談:
+```
+候選(可能被選) ≠ 選中(LLM 真的挑了,有理由) ≠ 發布(進了影片)
+```
+更陰險的是 `fetch_finance_news` 是**非確定性**的(即時、隨時變),它反映「現在」,
+而不是「早上那次實際選了什麼」——概念上根本答錯了工具。
+
+#### 為什麼是我的 prompt 沒寫好
+system prompt 把 `fetch_finance_news` 描述成「抓今天的候選池」,但**沒警告**「這是候選、不是選中,
+且是即時的」。自我檢查也只問「有沒有查資料」,沒問「我引用的是候選還是選中」。
+→ LLM 沒有被給予區分這三者的依據。
+
+#### 解法(工具 + prompt 一起,缺一不可)
+1. **補強 DB 工具**:`get_recent_selections` 加回 `run_id / source / position / select_reason`
+   → 讓「今天選了什麼 + 理由」一個工具一次答完,不必再拼第二個工具。
+2. **工具 docstring 標明身分**(docstring 就是 agent 的使用手冊):
+   - `get_recent_selections` →「【選片事實·來自 DB】問『選了什麼』用這個」
+   - `fetch_finance_news` →「【即時候選·非 DB】★沒有 selected、沒有理由★,絕不可用來回答『選了什麼』」
+3. **system prompt** 開頭放「候選 vs 選中 vs 發布」三概念定義 + 自我檢查新增一條
+   「我講的『選了』是不是真的來自 DB 工具的 select_reason?」
+
+> 💡 **教訓**:給 agent 多個功能相近的工具時,它會挑錯。防呆要三層 ——
+> ① 工具本身少而清楚 ② docstring 講清楚「何時用/不該用」 ③ prompt 明確定義易混淆的概念。
+> 光改 prompt 或光加工具都不夠:改 prompt 不補理由欄位 → 查得對但答不全;
+> 補工具不改 prompt → agent 還是挑錯即時工具。
+
+#### 結果
+- 修後測兩題:「今天選了什麼+理由」→ 正確查 DB 附真實理由;
+  「某則沒上的候選有被選嗎」→ 正確回答「沒有選中」,不再捏造。
+- 一句話:**agent 的幻覺,常常不是模型笨,而是我給的工具語意不清 + 概念沒定義好。**
+
+#### 對應 JD 能力
+`reason about hallucination risk, failure modes, permissions, and guardrails` ·
+`Strong understanding of prompt design and tool invocation` ·
+`Critically evaluate AI output rather than accepting it blindly` · `Custom AI Agents`
+
+### 🇬🇧 English Version
+
+#### Situation
+A selection-quality audit agent (function-calling loop) has three MCP tools: two read the DB
+(`get_recent_selections`, `get_run_detail`), one hits live RSS (`fetch_finance_news`).
+
+#### Problem
+The agent reported a news item as "selected," with a selection reason — but that item never made it
+into today's video.
+
+#### Investigation
+Didn't guess — queried the data:
+1. Searched the DB by link and title → **zero rows**. Not selected, not even a candidate.
+2. Yet the reported item **carried a "selection reason"** — but `fetch_finance_news` returns candidates
+   with **no reason field**; reasons only exist as `select_reason` in the DB. → the reason was **fabricated**.
+3. Checked today's actual run (run 10) candidate pool → item absent.
+4. Pulled **live** RSS → the item was now **#1**. It's a candidate that appeared *after* run 10 executed.
+
+#### Root Cause
+The agent called `fetch_finance_news` (live RSS) to answer "what was selected," conflating a
+**candidate** with a **selection**, and since candidates have no reason, the LLM **invented a plausible one**.
+Three distinct concepts were blurred: candidate ≠ selected ≠ published. Worse, `fetch_finance_news` is
+**non-deterministic** — it reflects "now," not "what that run actually selected."
+
+#### Why It Was My Prompt's Fault
+The system prompt described `fetch_finance_news` as "today's candidate pool" but never warned it's
+candidates-not-selections and live. The self-check never asked "is what I'm citing a candidate or a
+selection?" The model had no basis to distinguish the three.
+
+#### Fix (tool + prompt together — neither alone is enough)
+1. **Enrich the DB tool**: `get_recent_selections` now also returns `run_id / source / position /
+   select_reason`, so "what was selected today + why" is answered in one call.
+2. **Self-labeling docstrings** (the docstring *is* the agent's manual): mark `get_recent_selections`
+   as "selection facts from DB — use this for 'what was selected'", and `fetch_finance_news` as
+   "live candidates, no selected/no reason — never use to answer 'what was selected'."
+3. **System prompt**: define candidate vs selected vs published up front, and add a self-check:
+   "is my 'was selected' claim actually backed by a DB tool's `select_reason`?"
+
+> 💡 **Lesson**: given several similar tools, an agent will pick the wrong one. Guard in three layers —
+> keep tools few and distinct, make docstrings say when/when-not to use, and define the confusable
+> concepts in the prompt. Prompt-only or tool-only fixes are insufficient.
+
+#### Result
+Post-fix, two tests pass: "what was selected today + why" correctly reads the DB with real reasons;
+"was this unpublished candidate selected?" correctly answers "no," with no fabrication.
+In one line: **agent hallucination is often not a dumb model — it's tool semantics I left ambiguous.**
+
+#### Mapped JD Competencies
+`reason about hallucination risk, failure modes, permissions, and guardrails` ·
+`Strong understanding of prompt design and tool invocation` ·
+`Critically evaluate AI output rather than accepting it blindly` · `Custom AI Agents`
+
+---
+
+# Part B — 面試談資 / Talking Points
+
+> 這一區不是 bug,是**概念與比喻**。面試被問到 MCP / agent 時,能順口講出來的版本。
+> 每則都附:一句話電梯稿 → 完整口語版 → 英文版 → 對應 JD。
+
+---
+
+<a id="T1"></a>
+## T1 — MCP 是什麼 & config 綁 client 不綁 tool
+
+### 一句話(電梯稿)
+MCP 之於 AI agent,就像 USB 之於周邊設備:工具方實作一次,任何支援 MCP 的 client 都能用,不必為每個 client 各寫一套串接。
+
+### 完整口語版(中文)
+MCP(Model Context Protocol)標準化的是「怎麼把工具能力描述給 LLM、以及怎麼呼叫」。
+它的運作核心是:**LLM 不執行任何程式碼,它只『說』要呼叫哪個工具、參數是什麼;真正執行的是 client(host)**,執行完把結果塞回對話,LLM 才有東西可講。
+
+關鍵觀念是 **config 綁 client、不綁 tool**:
+- server(真正的功能)只寫一次。
+- 每個想用它的 client,各自在自己的地方「登記」一次:用哪個指令、跑哪支腳本、工作目錄在哪 —— 就 3~5 行。
+- 你登記的是 **server(一整包工具)**,不是逐一登記每個 tool。所以 server 之後加第四個 tool,client 一個字都不用改,下次連上問一次 `list_tools` 就自動看到。
+
+我的專案裡,同一份 server 被**兩個完全獨立的 client**使用 —— 我自己的 Python agent、跟 Claude Desktop。一個登記在程式碼裡、一個登記在 JSON 設定檔,但都是同樣那幾行「去哪找 server」。兩者互不依賴:一邊壞了不影響另一邊。
+
+### 英文版
+"MCP is like USB for AI agents — you implement a tool once, and any MCP-capable client can use it, instead of writing a separate integration per client.
+
+The key idea is that the **config is per-client, not per-tool**. The server — the actual functionality — is written once. Every client that wants it just registers where to find it: which command, which script, which working directory — maybe five lines. And you register the *server*, a whole bundle of tools, not each tool. So if I add a fourth tool later, no client changes; they rediscover it via `list_tools`.
+
+In my project the same server is used by two completely independent clients — my own Python agent and Claude Desktop. One registers it in code, the other in a JSON config, but it's the same few lines of 'where to find the server,' and neither depends on the other. You're registering an **address**, not re-implementing the integration."
+
+### 對應 JD
+`Model Context Protocol (MCP)` · `Interoperability across AI components without hard-coded integrations` · `Tool and capability exposure to LLM-based agents`
+
+---
+
+<a id="T2"></a>
+## T2 — 本機版 → 企業級 的對照(我做了哪些簡化、該換成什麼)
+
+### 一句話(電梯稿)
+我用 stdio transport 做本機單人版,每個 client 各開一份 server;要上到 24×7 生產系統,會換成 HTTP transport + 中央 registry + 註冊時驗身分 + gateway 做限流/重試/稽核。我很清楚自己簡化了什麼、以及每一項該換成什麼。
+
+### 對照表(核心)
+| 面向 | 我的本機版 | 企業級(如製造業 24×7) |
+|---|---|---|
+| transport | **stdio**(server 當子行程) | **HTTP**(Streamable HTTP,常駐服務) |
+| server 幾份 | 每 client 各開一份 | 一叢,水平擴展 + 負載均衡 |
+| register 對象 | 本機腳本路徑 | 服務 URL + 憑證 |
+| 發現方式 | 各 client 各寫 config | 中央 **registry** 目錄 |
+| 權限 | 無(全信任) | **身分驗證 + 資料邊界**(同 server,不同 agent 看到不同資料) |
+| 失敗處理 | try/except + 印訊息 | gateway 做 **重試 / 熔斷 / 告警** |
+| 稽核 | 本機 SQLite | 集中式 **audit log** |
+| 可觀測性 | 印 log | latency / 錯誤率 / rate limiting |
+
+### 為什麼這樣講有殺傷力
+不是假裝做過企業級,而是**「因為我手刻過本機版,所以我講得出為什麼企業需要那些東西」**。
+每個「簡化」都是刻意的取捨,不是不知道 —— 這正是資深工程師的判斷力。
+
+### 英文版
+"I built it with **stdio** transport for local single-user use, where each client spawns its own server subprocess. In a production setting like a 24×7 manufacturing system, you'd move to an **HTTP transport** with a central **registry**, put **authentication and data-boundary checks at registration time** — so the same server exposes different data to different agents — and front it with a **gateway** for rate limiting, retries, circuit breaking, and audit logging.
+
+I made those simplifications **deliberately**, and I know exactly which ones you'd have to replace to harden it for mission-critical use."
+
+### 對應 JD
+`Harden AI components for 24x7 mission critical physical manufacturing systems` · `Reliability and resiliency` · `Latency and performance` · `Security, permissions, and data boundaries` · `Observability and maintainability` · `Critically evaluate ... apply human judgment`
+
+---
+
+<a id="T3"></a>
+## T3 — workflow vs agent 的分水嶺(為什麼需要決策迴圈)
+
+### 一句話(電梯稿)
+線性 pipeline 的步驟由人寫死;agent 的下一步由 LLM 自己決定,而它得先看到上一步的結果才能決定 —— 所以需要一個「查 → 把結果塞回 → 再問」的迴圈,直到它自己喊停。
+
+### 完整口語版(中文)
+LLM 一次呼叫只能做兩件事之一:「我要呼叫工具 X」或「我有答案了」。
+如果它選了呼叫工具,這次呼叫就結束了、還沒有答案。我得幫它執行、把結果塞回對話、**再問它一次**。這個「執行→塞回→再問」如果只做一次,是 workflow;做到它自己不再要求工具,就是 agent。
+
+關鍵在於:**下一步該查什麼,取決於上一步查到什麼。** 我專案的稽核 agent 實測會自己走多輪 —— 先查「近 7 天選片」看全貌,發現可疑後再深挖特定 run 的細節,最後才產出報告。這條路徑沒有人寫死,是它看了中間結果自己決定的。
+
+而迴圈一定要配一道**保險絲**(我設 `AGENT_MAX_ITERATIONS=5`):萬一 LLM 鬼打牆一直查不收斂,強制停止、用現有資訊作答 —— 這就是 agent 的 guardrail。
+
+### 英文版
+"A single LLM call can only do one of two things: 'call tool X' or 'here's my answer.' If it asks for a tool, that call ends without an answer — so I execute the tool, feed the result back into the conversation, and ask again. Do that once and it's a workflow; loop until the model stops asking for tools and it's an agent.
+
+The point is that **what to look up next depends on what the last lookup returned**. My audit agent decides its own path at runtime — it first pulls the week's selections to get the big picture, notices something off, then drills into specific runs, and only then writes the report. Nobody hard-coded that sequence.
+
+And the loop always needs a fuse — I cap it at five iterations — so a model that never converges gets stopped and forced to answer with what it has. That's the guardrail."
+
+### 對應 JD
+`Design Custom AI Agents beyond simple chat interfaces` · `Multi-step reasoning and tool-driven execution` · `reason about hallucination risk, failure modes, permissions, and guardrails`
 
 ---
 

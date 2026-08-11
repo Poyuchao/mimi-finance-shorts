@@ -14,6 +14,7 @@
 > - **UPDATE 6(資料庫記錄)**:用 SQLAlchemy + 本機 SQLite(`mimi.db`)把**每次執行的候選 ~10 篇 + LLM 選中的 3 篇 + 選片理由**記錄下來,用於**事後驗證 LLM 選片品質**(不做去重、不做分析)。寫 DB 失敗**絕不中斷發片**。標記 🆕 UPDATE 6。
 > - **UPDATE 7(GCP 部署)**:⏭️ **暫時跳過**(使用者決定先維持本機執行)。
 > - **UPDATE 8(Finance News MCP Server)**:把「**抓新聞 + 查歷史選片**」封裝成本地 **stdio MCP server**,以標準協議把工具能力暴露給選片 agent,**取代硬編碼整合**。核心是「**不重寫功能,只用 MCP 暴露既有能力**」。`USE_MCP` 開關 + **MCP 失敗自動 fallback 回直接呼叫**(發片穩定性優先於架構潮度)。標記 🆕 UPDATE 8。
+> - **UPDATE 9(選片品質稽核 Agent)**:做一個**獨立、純唯讀**的終端機 CLI `agent.py` —— 用**自然語言**詢問歷史選片品質,由 **LLM 自己決定**呼叫哪些 MCP 工具、呼叫幾次(function calling **決策迴圈**,非線性 pipeline),產出結構化稽核報告。新增 MCP tool `get_run_detail` + MCP **Resource** `runs://latest`。**★ 完全不碰發片流程(`main.py` 不改)★**。這是專案第一次「AI 當決策者」而非「AI 當單一工具」。標記 🆕 UPDATE 9。
 > - 部分 UPDATE 另有搭配文件 `FINANCE_VIDEO_DEVELOPMENT 修改指引.md`。
 
 ---
@@ -60,6 +61,11 @@
 ⑨ 🆕 UPDATE 6:寫入 DB(SQLite mimi.db)
     記錄「候選 ~10 篇 + LLM 選中的 3 篇 + 理由 + 位置」→ 事後驗證選片品質
     ★ 寫 DB 失敗只 log,絕不中斷發片 ★
+
+──────────────────────────────────────────────
+🆕 UPDATE 9:選片品質稽核 agent(獨立入口 `python agent.py`,★不在上面發片流程內★)
+    自然語言問歷史選片品質 → LLM 用 function calling 自主呼叫 MCP 工具做多步推理 → 稽核報告
+    純唯讀;不碰 main.py
 ```
 
 > 🆕 **UPDATE 1 核心概念(仍成立)**:米米**不對嘴(no lip-sync)**→ 動作與當日內容無關 → **同一段米米動畫每天重複用** → AI 圖生影片只**手動預生成一次**建素材庫。
@@ -219,6 +225,27 @@
 
 > 💡 **誠實的效益評估**:現階段是「同程式、同機、呼叫自己的函式」,包成 MCP **功能完全一樣**,還多了子行程/序列化/async 成本與一個新失敗點。好處是**架構投資**(換資料源、加工具、agent 自主調度、跨專案共用時才兌現)。因此 `USE_MCP` 開關與 fallback 是必要的風險控制。
 
+#### 🆕 UPDATE 9（選片品質稽核 Agent)決策
+
+| # | 項目 | 結論 |
+|---|------|------|
+| Q1 | 定位 | **獨立維運工具**,不整合進 `main.py`;`python agent.py` 單獨執行。★這次完全不碰發片流程★ |
+| Q2 | 介面 | **終端機 CLI**(`input()` 迴圈)。★不做網頁 UI、不接 Claude Desktop★ |
+| Q3 | 讀寫 | 🔴 **純唯讀** —— 只查 DB / 抓新聞,不寫入、不改 prompt、不動發片 |
+| Q4 | LLM | **OpenAI `gpt-4o-mini`**(沿用 `llm_service` 的 key 設定)|
+| Q5 | 決策機制 | **OpenAI function calling**(`tools` 參數 + `tool_calls` 回傳)—— LLM 自己決定呼叫什麼 |
+| Q6 | 工具來源 | 🔴 **一律透過既有 `mcp_client` 呼叫 MCP server**,★不准繞過 MCP 直接呼叫 repository★ |
+| Q7 | 迴圈上限 | **`AGENT_MAX_ITERATIONS = 5`**(防無限迴圈);達上限用現有資訊作答並註記 |
+| Q8 | 工具失敗 | 🔴 **結構化回傳錯誤給 LLM**(`{"error": "..."}`),不 raise、不中斷,讓 LLM 自己決定換方式 |
+| Q9 | 輸出格式 | **結構化 JSON**(沿用審圖的 blocking / minor 分級概念),CLI 再印成易讀格式 |
+| Q10 | 新增 MCP tool | `get_run_detail(run_id)` —— 查單次執行的完整候選 + 選中理由 |
+| Q11 | 新增 MCP resource | `runs://latest` —— ★展示 MCP 的 **Resource** primitive(不只有 tools)★ |
+| Q12 | 開關 | 無需開關(獨立檔案,不影響現有流程)|
+
+> 💡 **這次的架構意義**:現有 pipeline 是**線性**(順序由 `main.py` 寫死);稽核 agent 是**迴圈**(呼叫哪個工具、幾次、何時停,由 LLM 決定)。這是本專案第一次讓 AI 從「填某一格的工具」升級成「規劃流程的決策者」—— 也是 workflow 與 agent 的分水嶺。成敗定義是「**agent 能自主做出多步推理、產出有用的稽核報告**」,不是功能多完整。
+>
+> 🔴 **沿用 UPDATE 6 的關鍵 prompt 經驗**:規則埋在條列清單裡 LLM 會忽略,改成「**回答前的自我檢查步驟**」才有效。稽核 prompt 也要這樣寫(見 §3.15)。
+
 ### 0.3 本階段「不做」（之後才做，別提前）
 
 ```
@@ -315,11 +342,13 @@ finance-video/
 │   ├── __init__.py
 │   ├── models.py           #   Run + Candidate(SQLAlchemy)
 │   ├── database.py         #   engine / session / init_db
-│   └── repository.py       #   save_run + get_recent_selections(U8 補)
+│   └── repository.py       #   save_run + get_recent_selections(U8)+ get_run_detail(U9)
 ├── mcp_server/             # 🆕 UPDATE 8:MCP server(本地 stdio)
 │   ├── __init__.py
 │   └── finance_news_server.py  #   tools: fetch_finance_news / get_recent_selections
+│                           #   🆕 U9 補:tool get_run_detail + resource runs://latest
 ├── mcp_client.py           # 🆕 UPDATE 8:啟動 server 子行程 + 呼叫 tools
+├── agent.py                # 🆕 UPDATE 9:選片品質稽核 agent(獨立 CLI,純唯讀決策迴圈)
 ├── mimi.db                 # 🆕 UPDATE 6:SQLite 資料檔(gitignore)
 ├── assets/                 # 手動素材(非 pipeline 產)
 │   └── mimi/               # 🆕 UPDATE 2:米米素材只要 2 段(頭尾)
@@ -440,6 +469,11 @@ USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 6 現狀)
 DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考歷史,不強制去重)
 # ★ 原設計的 MCP_SERVER_CMD 已取消:改由 mcp_client.py 自行推導
 #   sys.executable + 絕對路徑 script + cwd=專案根(避免 "python" 抓到 Store stub)
+
+# ── 🆕 UPDATE 9:選片品質稽核 agent ─────────────────
+AGENT_MODEL              = "gpt-4o-mini"   # 沿用現有 LLM(與 llm_service 一致)
+AGENT_MAX_ITERATIONS     = 5               # 決策迴圈硬上限(防無限迴圈)
+AGENT_AUDIT_DEFAULT_DAYS = 7               # 稽核預設查幾天
 ```
 ⚠️ `.gitignore` 要加 `mimi.db`(資料檔不 commit)。
 
@@ -504,6 +538,14 @@ DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考歷史,
 
 ⚠️ 若「篩出的股市新聞 < NEWS_POOL」→ 有幾則給幾則(LLM 就從較少的候選挑)
 ⚠️ 若「候選 < NEWS_COUNT(3)」→ 最終有幾則做幾則 + log 提示（別硬湊/報錯）
+
+🟡 已知潛在風險(2026-07-26 記錄,暫不處理):
+   select_news 只「排序」不「過濾日期」→ 若某天 RSS 夾帶舊新聞、或今天有效新聞
+   不足 NEWS_POOL,舊聞會補進候選池,LLM 可能選到。另 `published` 缺失的新聞會被
+   `datetime.min` 墊底(排最後),正常進不了前 10,但稀少日可能浮上來。
+   ★ 當日實測候選 10 則全為當天、無缺時間,故非急迫 bug。★
+   未來若要加固:排序前加 MAX_AGE_DAYS 過濾;但需先決定「無 published 者嚴格丟/寬鬆留」
+   政策,且防「RSS 時間格式異常 → 全被濾掉 → 發不出片」。
 ```
 
 ### 3.5 `llm_service.py` — LLM（🔴 可替換介面，★ 分兩步呼叫）
@@ -974,6 +1016,13 @@ db/repository.py:
     • 查過去 days 天內 selected=True 的新聞(join Run 用 run_date 過濾)
     • 供 MCP tool `get_recent_selections` 使用(讓 agent 看得到最近發過什麼)
 
+  🆕 UPDATE 9 補:
+  get_run_detail(session, run_id) -> dict | None
+    • 取單次執行的完整資訊:候選清單 + 哪 3 則被選中 + 選片理由 + position
+    • 用既有 Run/Candidate models + relationship;找不到 → 回 None
+    • 回傳 {run_id, created_at, candidates: [{title, link, selected, position, reason}]}
+    • datetime 沿用 U8 的 _jsonable() 處理
+
 ⚠️ 上雲(UPDATE 7):Cloud Run Job 無狀態 → 容器內 mimi.db 跑完就消失!
    屆時改持久化(SQLite+GCS 下載/上傳,或換 DB)→ 只改 config.DB_URL + 加上下載,
    models/repository 不用動。
@@ -1005,6 +1054,55 @@ mcp_client.py:
    MCP Python SDK 的實際 API(class 名 / 裝飾器 / types)更新快,
    ★必須先安裝套件、依「當前版本的官方文件與實際 API」實作★,
    不可照指引的概念碼硬套;不確定就停下來回報。
+
+🆕 UPDATE 9 補(mcp_server 再加):
+  tool get_run_detail(run_id: int) -> dict
+     → 內部:repository.get_run_detail(session, run_id)
+     → docstring 🔴 是 agent 的使用手冊,要寫「做什麼 + 何時該用」,不只寫參數
+
+  resource runs://latest -> str
+     → @app.resource("runs://latest");回最近一次執行的摘要
+     → ★展示 MCP 的 Resource primitive(唯讀資料,與 tool 的「有副作用動作」區分)★
+```
+
+### 3.15 `agent.py` — 選片品質稽核 agent（🆕 UPDATE 9）
+
+```
+職責:獨立、純唯讀的終端機 CLI。用自然語言問歷史選片品質,
+     LLM 用 function calling 自主決定呼叫哪些 MCP 工具、幾次,產出結構化稽核報告。
+     ★ 不碰發片流程;不繞過 MCP 直接呼叫 repository。★
+
+決策迴圈(核心):
+  1. 啟動:透過 mcp_client 取得工具清單(MCP discovery)
+  2. 把 MCP tool schema 轉成 OpenAI tools 格式(★inputSchema→parameters 欄位名不同,需轉換★)
+  3. messages = [system_prompt, user_question]
+     for i in range(AGENT_MAX_ITERATIONS):
+         resp = openai.chat(messages, tools=tools)
+         if resp.tool_calls:                       # LLM 要查資料
+             for call in resp.tool_calls:          # ★一輪可能多個 call,全部跑完再回覆★
+                 result = mcp_client.call_tool(...) # 走 MCP;失敗回 {"error":...} 不中斷
+                 messages.append(tool_result)       # ★每筆帶對應 tool_call_id,漏了 400★
+             continue                               # 回頭讓 LLM 再判斷
+         else:
+             return resp.content                    # LLM 給答案 → 結束
+     # 迴圈用盡 → 用現有資訊作答並註記「達迭代上限」
+
+System prompt 要點(★沿用 UPDATE 6 經驗:規則要放進「回答前自我檢查」才有效★):
+  身分:米米財經選片品質稽核員,可呼叫工具查歷史選片
+  稽核重點:① 主體重複(同一次選了同公司多則)② 來源偏食(三來源失衡)
+           ③ 題材集中(連續多天同類型)④ 理由品質(具體 vs 空泛)
+  ★ 回答前自我檢查:我真的查了資料嗎?每個問題都對得上 run_id 嗎?嚴重度分級對嗎?
+  輸出 JSON:{period, runs_analyzed, issues:[{type,severity,run_id,detail,suggestion}],
+             source_distribution, summary}
+
+CLI:while True → input("問題> ") → run_agent(q);exit/quit/空 → 結束
+  ★ Demo 用:每次工具呼叫都印出來(如 [工具] get_run_detail(run_id=12)),
+    才看得出 agent 在做多步推理。
+
+驗證(分兩階段):
+  單輪:「最近選了哪些新聞」→ 應只呼叫 1 次工具就作答
+  多輪:「這週選片品質有沒有問題」→ ★先查 recent、發現異常再查 detail,至少 2 輪★
+  容錯:弄壞 MCP server → agent 不 crash,回報錯誤
 ```
 
 ---
@@ -1233,6 +1331,32 @@ mcp_client.py:
 階段 U8-4:(可選)歷史參考進選片
   → 把 recent 帶進 select_top_news 的 prompt
   ✅ 驗證:agent 選片時看得到「最近發過的」
+```
+
+### 🆕 UPDATE 9:選片品質稽核 Agent 開發順序
+
+```
+階段 U9-1:補 MCP tool get_run_detail
+  → repository.get_run_detail(session, run_id)(先寫,單獨測)
+  → finance_news_server.py 加 @app.tool() get_run_detail(docstring 寫清楚何時該用)
+  ✅ 驗證:給真實 run_id → 回傳完整候選+理由,且可 JSON 序列化
+
+階段 U9-2:補 MCP resource runs://latest
+  → @app.resource("runs://latest") 回最近一次摘要
+  ✅ 驗證:client 端 list_resources() / 讀得到內容
+  → 這步的重點是「展示 Resource primitive」,功能簡單即可
+
+階段 U9-3:agent.py 決策迴圈(核心)★最容易卡:先打通 schema 轉換★
+  → 先寫「MCP inputSchema → OpenAI tools parameters」的最小轉換測試,確認格式對得上
+  → 再寫決策迴圈(tool_call_id 對應、一輪多 call、AGENT_MAX_ITERATIONS 上限)
+  → system prompt 含「回答前自我檢查」;每次工具呼叫印出來
+  ✅ 驗證 單輪:「最近選了哪些新聞」→ 1 次工具呼叫就作答
+  ✅ 驗證 多輪:「這週選片品質有沒有問題」→ ★先 recent 再 detail,≥2 輪推理★
+  ✅ 驗證 容錯:弄壞 MCP server → agent 不 crash,結構化回報錯誤
+
+階段 U9-4:config + 確認零副作用
+  → AGENT_MODEL / AGENT_MAX_ITERATIONS / AGENT_AUDIT_DEFAULT_DAYS
+  ✅ 驗證:★main.py 完全不受影響,發片流程正常★
 ```
 
 ---
@@ -1498,6 +1622,52 @@ mcp_client.py:
 原因:寫死 `"python"` 在本機會抓到 Microsoft Store 的 python stub(本專案早期踩過),
 且相對路徑受呼叫端 cwd 影響。→ 少一個會設錯的設定項,啟動更穩。
 
+**⚠️ U8 事後修正(2026-07-24):序列化邊界的無聲漏記**
+MCP 為了 JSON 把 `published` 轉成 isoformat 字串,但 `Candidate.published` 是 `DateTime` 欄位
+→ `save_run` 拋 `StatementError`,7/21 後所有執行**都沒寫進 DB 卻沒人發現**(寫 DB 包在 try/except
+只印一行 warning)。修正:`mcp_client._restore_datetimes()` 在 client 邊界把字串還原成 datetime;
+`main.py` 的失敗訊息改成醒目區塊。**教訓:容錯 ≠ 靜音。** 詳見 `INTERVIEW_NOTES.md` #001。
+
+### 🆕 UPDATE 9 選片品質稽核 Agent Checklist
+
+**U9-1 MCP tool `get_run_detail`**
+- [x] `repository.get_run_detail(session, run_id)`(候選 + selected + position + reason;找不到回 None)
+- [x] `finance_news_server.py` 加 `@app.tool() get_run_detail`
+- [x] docstring 寫清楚「做什麼 + 何時該用」(★是 agent 的使用手冊★)
+- [x] datetime 可 JSON 序列化(回傳已無 datetime 物件 —— `run_date`/候選欄位都是字串/純量)
+- [x] ✅ 驗證:真實 run_id 回傳正確且可序列化;找不到回 None;MCP tool 層回 `{"error":...}`
+
+**U9-2 MCP resource `runs://latest`**
+- [x] `@app.resource("runs://latest")` 回最近一次摘要
+- [x] ✅ 驗證:client 端 `list_resources()` + `read_resource()` 皆讀得到
+
+**U9-3 `agent.py` 決策迴圈**
+- [x] MCP 工具 discovery + `inputSchema` → OpenAI `parameters` 轉換
+      → ★實測:FastMCP 的 inputSchema 就是乾淨 JSON Schema,只需包一層 wrapper(指引擔心的格式不符不存在)★
+- [x] 決策迴圈(`AGENT_MAX_ITERATIONS` 上限;每輪印當前輪數;用盡→逼一次無工具作答並註記)
+- [x] `tool_call_id` 對應正確(每筆 tool 回覆帶對應 id)
+- [x] 一輪多個 `tool_calls` → 全部執行完再一起回覆(多輪驗證實際觸發:一輪並行查 run 1/2/3)
+- [x] 工具失敗 → `_call_tool_safe` 回結構化 `{"error":...}`,不 raise、不中斷
+- [x] system prompt 含「送出答案前的最終自我檢查」(★沿用 U6 經驗★)
+- [x] 每次工具呼叫印出(`[工具] name(args) ← 第 N 輪`)
+- [x] JSON 解析容錯(strip ``` 圍欄;非 JSON 就原文照印,不 crash)
+- [x] CLI `input()` 迴圈(exit/quit/空 → 結束;EOF/Ctrl+C 也優雅收工)
+- [x] ✅ 驗證 單輪:「最近選了哪些新聞」→ 1 次 `get_recent_selections` 作答
+- [x] ✅ 驗證 ★多輪:「稽核這週」→ 3 輪(recent → 並行 detail×3 → recent)產出 JSON 報告★
+- [x] ✅ 驗證 容錯:弄壞 server → CLI 報 `McpError: Connection closed`、回提示、不 crash
+      → 額外做 `_root_cause()` 從 async ExceptionGroup 挖根因(否則只顯示無意義的 TaskGroup 字串)
+
+**U9-4 config**
+- [x] `AGENT_MODEL` / `AGENT_MAX_ITERATIONS` / `AGENT_AUDIT_DEFAULT_DAYS`
+- [x] ✅ 驗證:`main.py` 沒 import agent、未被改動、仍正常 import → 發片流程零影響
+
+**實作後回填**
+- [x] MCP `inputSchema` 與 OpenAI `parameters` **格式相容**(先寫最小測試確認,免驚)
+- [x] LLM 有乖乖先查資料才作答(system prompt「自我檢查①」奏效,未見憑空編造)
+- [x] 無限迴圈防護:`AGENT_MAX_ITERATIONS=5` 未觸發(多輪稽核 3 輪內完成)
+- [⚠] **觀察**:agent 稽核時會把測試資料 run 1/2(假標題)也一起分析並產生雜訊
+      → 印證「測試資料污染稽核」;run 9(除錯殘留)已清除,run 1/2 使用者決定保留
+
 ---
 
 ## 6. 需要使用者提供 / 確認的
@@ -1558,11 +1728,13 @@ mcp_client.py:
 • 🔴 UPDATE 7(部署)必須處理:**Cloud Run Job 無狀態 → 容器內 `mimi.db` 跑完就消失**
     → DB 要換持久化(SQLite+GCS 每次下載/上傳,或換 DB);ORM 只改 `config.DB_URL`,models/repository 不動
 • 審稿 agent:口播稿是否偏離原新聞、標題是否誇大(UPDATE 5 只做了審圖)
-• 🆕 UPDATE 8 之後可擴充:把「生圖 / 審圖 / TTS」也暴露成 MCP tools
-    → 讓「內容生成 agent」透過 MCP 調度整條產製線
+• 🆕 UPDATE 9 之後可擴充:
+    → 把「生圖 / 審圖 / TTS」也暴露成 MCP tools,讓 agent 調度整條產製線
+    → 稽核 agent 定期自動執行(排程)+ 有問題主動通知
+    → 讓 agent 直接建議 select prompt 的具體修改內容
 • MCP over HTTP transport(跨機 / 多 agent 共用);與 LangGraph 等 agent 框架結合
 ```
-（🆕 UPDATE 1:原「AI 虛擬人像」已落地為米米主播。UPDATE 3:YouTube 本機上傳已做。UPDATE 4:新聞卡 AI 生圖已做,移出未來清單。）
+（🆕 UPDATE 1:原「AI 虛擬人像」已落地為米米主播。UPDATE 3:YouTube 本機上傳已做。UPDATE 4:新聞卡 AI 生圖已做。UPDATE 9:選片品質稽核 agent 已規劃,移出未來清單。)
 
 ---
 

@@ -1,295 +1,260 @@
-# FINANCE_VIDEO_DEVELOPMENT — 修改指引 UPDATE 8:Finance News MCP Server（工具能力以 MCP 暴露給選片 agent）
+# 🆕 UPDATE 9（選片品質稽核 Agent）— 修改指引
 
-> 搭配主規格 **FINANCE_VIDEO_DEVELOPMENT.md**,接續 UPDATE 1~7(米米、節目化、YouTube 上傳、AI 生圖、AI 審圖、DB 記錄、GCP 部署)。
->
-> 現狀:`main.py` 直接呼叫 `fetch_rss()` / `select_news()` / `repository` 抓新聞與存取 DB。這份把**新聞抓取與歷史選片查詢**封裝成一個 **MCP(Model Context Protocol)server**,以標準化協議把「工具能力」暴露給 LLM 選片 agent,取代硬編碼整合。
->
-> **給開發 agent:這次引入 MCP,把既有的抓取/查詢邏輯「包成 MCP server 的 tools」,並讓選片改成「agent 透過 MCP 呼叫工具」。重點是『不重寫功能,而是用 MCP 標準協議暴露既有能力』。這是進階架構升級,務必分階段、每步單獨驗、不確定就停下來問。⚠️ 保留原本的直接呼叫路徑當 fallback(MCP 掛掉不能讓發片停擺)。**
+> **給開發 agent 的核心提醒:這是分階段專案,一步一步做、每步都能單獨跑單獨驗,不要一次全寫完。遇到不確定的地方停下來回報,不要自行猜測補完。**
 
 ---
 
-## U8-0. 這次在做什麼 + 為什麼
+## 0. 這次要做什麼
+
+把 UPDATE 6 存進 DB 的「LLM 選片決策紀錄」，從**人工翻 DB** 變成**用自然語言詢問的 custom agent**。
+
+**動機（真實痛點）**：UPDATE 6 第一筆真實紀錄就抓到「同一次選了力積電兩則」的問題，但那是使用者手動跑 `query_runs.py` 才發現的。不可能每天翻，也看不出跨天的趨勢。
+
+**核心差異**：
+- 現有 pipeline = **線性**，順序由 `main.py` 寫死
+- 稽核 agent = **迴圈**，由 LLM 自己決定要呼叫哪些工具、呼叫幾次、何時停
 
 ```
-現在:main.py 硬編碼呼叫 fetch_rss()、select_news()、repository.get_recent()
-  → agent/LLM 與「資料來源」是寫死綁定的
-
-改成:把這些能力包成 MCP server 的 tools:
-  • fetch_finance_news → 抓 + 篩 + 收斂候選池
-  • get_recent_selections → 查 DB 過去發過的新聞(歷史選片)
-  → 選片 agent「透過 MCP 標準協議」呼叫這些工具拿資料
-  → 不再硬編碼整合
-
-為什麼(架構價值,也是履歷/JD 對齊點):
-  ✅ Tool/capability exposure to LLM-based agents(工具暴露給 agent)
-  ✅ Structured context sharing between models, tools, and agents
-  ✅ Interoperability without hard-coded integrations(去除硬編碼整合)
-  → agent 與資料源解耦,之後換資料源/加工具只改 MCP server
+使用者在終端機提問
+      ↓
+agent.py（自建 host）
+  ├─ 把問題 + MCP 工具清單丟給 LLM
+  ├─ LLM 回「我要呼叫 get_recent_selections(days=7)」
+  ├─ 透過既有 mcp_client 執行 → 拿到結果
+  ├─ 結果餵回 LLM → LLM 再判斷（可能再呼叫 get_run_detail）
+  └─ LLM 說「我有答案了」→ 輸出結構化稽核報告
+      ↓
+終端機印出報告
 ```
 
-### U8-0.1 已定案決策（不要自行更改）
+**★ 這次不碰發片流程。** `main.py` 完全不改，agent 是獨立入口、純唯讀。
+
+---
+
+## 1. 已定案決策（不要自行更改，有疑問先問）
 
 | # | 項目 | 結論 |
 |---|------|------|
-| 1 | 協議 | **MCP (Model Context Protocol)**,用官方 Python SDK（`mcp`）|
-| 2 | server 型態 | 本地 **stdio** MCP server（同機、子行程,不需對外網路）|
-| 3 | 暴露的 tools | `fetch_finance_news`、`get_recent_selections`（先兩個核心）|
-| 4 | 消費端 | 選片 agent 透過 MCP client 呼叫 tools → 拿到資料再做 LLM 選片 |
-| 5 | 底層邏輯 | **不重寫**:MCP tool 內部就是呼叫既有 `fetch_rss`/`parse_filter`/`select_news`/`repository` |
-| 6 | fallback | ⚠️ **MCP 連線/呼叫失敗 → 退回原本的直接呼叫**（發片不可因 MCP 中斷）|
-| 7 | 開關 | `USE_MCP`（config,False = 走原本直接呼叫,等同 UPDATE 7 現狀）|
-| 8 | 邊界 | 這次**只把「抓新聞 + 查歷史」上 MCP**;生圖/審圖/上傳暫不上 MCP（之後可擴充）|
+| A1 | 定位 | **獨立的維運工具**，不整合進 `main.py`；`python agent.py` 單獨執行 |
+| A2 | 介面 | **終端機 CLI**（`input()` 迴圈）。★不做網頁 UI、不接 Claude Desktop★ |
+| A3 | 讀寫 | **純唯讀**。agent 只查 DB / 抓新聞，不寫入、不改 prompt、不動發片 |
+| A4 | LLM | **OpenAI `gpt-4o-mini`**（與現有一致，沿用 `llm_service` 的 key 設定）|
+| A5 | 決策機制 | **OpenAI function calling**（`tools` 參數 + `tool_calls` 回傳）|
+| A6 | 工具來源 | **一律透過既有 `mcp_client` 呼叫 MCP server**。★不准繞過 MCP 直接呼叫 repository★ |
+| A7 | 迴圈上限 | **`AGENT_MAX_ITERATIONS = 5`**（防無限迴圈）；達上限就用現有資訊作答並註記 |
+| A8 | 工具失敗 | **結構化回傳錯誤給 LLM**（`{"error": "..."}`），★不 raise、不中斷 agent★，讓 LLM 自己決定要不要換方式 |
+| A9 | 輸出格式 | **結構化 JSON**（沿用審圖的分級概念：blocking / minor），再由 CLI 印成易讀格式 |
+| A10 | 新增 MCP tool | `get_run_detail(run_id)` —— 查單次執行的完整候選 + 選中理由 |
+| A11 | 新增 MCP resource | `runs://latest` —— ★展示 MCP 的 Resource primitive（不只有 tools）★ |
+| A12 | 開關 | 無需開關（獨立檔案，不影響現有流程）|
 
 ---
 
-## U8-1. 新增 MCP Server（`mcp_server/finance_news_server.py`）
+## 2. 分階段實作（★每階段單獨驗，驗過才進下一步★）
 
-```
-用 MCP Python SDK 建一個 stdio server,暴露兩個 tool。
+### U9-1：補 MCP tool `get_run_detail`
 
-概念結構(以 MCP SDK 的 server 寫法):
-
-  from mcp.server import Server
-  from mcp.server.stdio import stdio_server
-  import mcp.types as types
-
-  app = Server("finance-news")
-
-  @app.list_tools()
-  async def list_tools():
-      return [
-          types.Tool(
-              name="fetch_finance_news",
-              description="抓取三來源財經 RSS,篩股市,收斂成候選 ~10 則",
-              inputSchema={
-                  "type": "object",
-                  "properties": {
-                      "pool_size": {"type": "integer", "default": 10}
-                  },
-              },
-          ),
-          types.Tool(
-              name="get_recent_selections",
-              description="查詢過去 N 天已選用/發布過的新聞(標題+連結)",
-              inputSchema={
-                  "type": "object",
-                  "properties": {
-                      "days": {"type": "integer", "default": 7}
-                  },
-              },
-          ),
-      ]
-
-  @app.call_tool()
-  async def call_tool(name, arguments):
-      if name == "fetch_finance_news":
-          # ★ 內部呼叫既有邏輯,不重寫 ★
-          entries = fetch_rss()
-          stock = parse_filter(entries)
-          candidates = select_news(stock, pool=arguments.get("pool_size", 10))
-          return [types.TextContent(type="text", text=json.dumps(candidates, ensure_ascii=False))]
-      if name == "get_recent_selections":
-          session = get_session()
-          links = repository.get_recent_selections(session, days=arguments.get("days", 7))
-          return [types.TextContent(type="text", text=json.dumps(links, ensure_ascii=False))]
-
-  async def main():
-      async with stdio_server() as (r, w):
-          await app.run(r, w, app.create_initialization_options())
-```
-
-```
-⚠️ MCP SDK 的實際 API(class 名、裝飾器、types)可能與此概念碼有出入,
-   且版本更新快 → agent 依「當前安裝的 mcp 套件官方文件/範例」實作,
-   不確定就回報,不要照這段概念碼硬套。
-⚠️ candidates 要能 JSON 序列化(datetime 轉字串)。
-```
-
-### U8-1.1 需要 repository 補一個查詢（若 UPDATE 6 沒有）
-
-```
-get_recent_selections 需要一個「查過去 N 天 selected 新聞」的方法:
-
-  # db/repository.py 補
-  def get_recent_selections(session, days: int):
-      cutoff = date.today() - timedelta(days=days)
-      rows = (session.query(Candidate.title, Candidate.link)
-                     .join(Run)
-                     .filter(Run.run_date >= cutoff, Candidate.selected == True)
-                     .all())
-      return [{"title": t, "link": l} for t, l in rows]
-
-→ UPDATE 6 記錄了 selected → 這裡查得到
-→ 目前 pipeline「不強制去重」,但這個查詢讓 agent「看得到歷史」
-  (agent 可自行參考「最近發過什麼」來選片,或未來做去重)
-```
-
----
-
-## U8-2. MCP Client:選片改成透過 MCP 拿資料（`mcp_client.py`）
-
-```
-選片 agent 端:啟動 MCP server(子行程)→ 呼叫 tools → 拿資料。
-
-概念:
-  from mcp import ClientSession, StdioServerParameters
-  from mcp.client.stdio import stdio_client
-
-  async def fetch_candidates_via_mcp(pool_size=10, dedup_days=7):
-      params = StdioServerParameters(command="python",
-                                     args=["mcp_server/finance_news_server.py"])
-      async with stdio_client(params) as (r, w):
-          async with ClientSession(r, w) as session:
-              await session.initialize()
-              # 呼叫工具 1:拿候選新聞
-              res = await session.call_tool("fetch_finance_news",
-                                            {"pool_size": pool_size})
-              candidates = json.loads(res.content[0].text)
-              # 呼叫工具 2:拿歷史選片(給 agent 參考)
-              rec = await session.call_tool("get_recent_selections",
-                                            {"days": dedup_days})
-              recent = json.loads(rec.content[0].text)
-              return candidates, recent
-
-→ 回傳 candidates(候選池)+ recent(歷史)給選片 agent
-→ 選片 agent 拿這些做 LLM 選片(select_top_news)
-→ ★ 這就是「agent 透過 MCP 標準協議取得工具能力」★
-```
-
-```
-⚠️ 同上:MCP client 的實際 API 依當前 SDK 文件。
-⚠️ async:MCP 是 async,main.py 呼叫處要用 asyncio.run() 包。
-```
-
----
-
-## U8-3. 整合進 `main.py`（加 USE_MCP 分支 + fallback）
-
-```
-現有:
-  entries = fetch_rss()
-  stock_news = parse_filter(entries)
-  candidates = select_news(stock_news, pool=10)
-  picked = llm_service.select_top_news(candidates, n=3)
-
-改成(MCP 分支 + fallback):
-  if config.USE_MCP:
-      try:
-          candidates, recent = asyncio.run(
-              mcp_client.fetch_candidates_via_mcp(pool_size=config.NEWS_POOL,
-                                                  dedup_days=config.DEDUP_DAYS))
-      except Exception as e:
-          log.warning(f"MCP 取得失敗,fallback 直接呼叫: {e}")
-          candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
-          recent = []
-  else:
-      candidates = select_news(parse_filter(fetch_rss()), pool=config.NEWS_POOL)
-      recent = []
-
-  picked = llm_service.select_top_news(candidates, n=config.NEWS_COUNT)
-  # (可選)把 recent 傳進 select_top_news 的 prompt,讓 agent 參考「最近發過的」
-
-→ ★ MCP 失敗 → 退回原本直接呼叫 → 發片不中斷 ★
-→ USE_MCP=False → 完全等同 UPDATE 7 現狀
-```
-
----
-
-## U8-4. `config.py` 新增
+**Step 1** — `db/repository.py` 新增查詢：
 
 ```python
-# 🆕 UPDATE 8:MCP
-USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 7)
-DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考歷史)
-MCP_SERVER_CMD = ["python", "mcp_server/finance_news_server.py"]
+def get_run_detail(session, run_id: int) -> dict | None:
+    """取單次執行的完整資訊：候選清單 + 哪 3 則被選中 + 選片理由"""
+    # 用既有 Run / Candidate models + relationship
+    # 回傳 {run_id, created_at, candidates: [{title, link, selected, position, reason}]}
+    # 找不到 → 回 None
+```
+
+**Step 2** — `mcp_server/finance_news_server.py` 加 tool：
+
+```python
+@app.tool()
+def get_run_detail(run_id: int) -> dict:
+    """查詢某一次執行的完整選片細節，包含當時的所有候選新聞、
+    LLM 選中的三則、每則的選片理由與排序位置。
+    當你需要深入了解某一次選片的判斷依據時使用。"""
+```
+
+> 🔴 **docstring 是 agent 的使用手冊**。LLM 完全靠它判斷「什麼時候該用這個工具」。
+> 寫清楚「這個工具做什麼」+「什麼情況該用」，不要只寫參數說明。
+
+**Step 3** — 沿用 UPDATE 8 的 `_jsonable()` 處理 datetime。
+
+**✅ 驗證**：直接跑 server 端函式 → 給一個真實 run_id → 確認回傳完整且可 JSON 序列化。
+
+---
+
+### U9-2：補 MCP Resource `runs://latest`
+
+```python
+@app.resource("runs://latest")
+def latest_run_summary() -> str:
+    """最近一次執行的摘要：日期、候選數、選中的三則標題"""
+```
+
+> **為什麼要做**：MCP 有三個 primitives —— Tools（模型控制、有副作用的動作）、
+> Resources（應用控制、唯讀資料）、Prompts（使用者控制的模板）。
+> 只做 tools 是不完整的實作。
+
+**✅ 驗證**：用 MCP Inspector 或 client 端 `list_resources()` 確認讀得到。
+
+---
+
+### U9-3：`agent.py` —— 決策迴圈（核心）
+
+**檔案位置**：專案根目錄 `agent.py`
+
+**結構**：
+
+```
+1. 啟動時：透過 mcp_client 取得工具清單（MCP discovery）
+2. 把 MCP tool schema 轉成 OpenAI tools 格式
+3. 進入對話迴圈：
+   messages = [system_prompt, user_question]
+   for i in range(AGENT_MAX_ITERATIONS):
+       resp = openai.chat(messages, tools=tools)
+       if resp.tool_calls:
+           for call in resp.tool_calls:
+               result = mcp_client.call_tool(call.name, call.args)   # 走 MCP
+               messages.append(tool_result)
+           continue                      # 回頭讓 LLM 再判斷
+       else:
+           return resp.content           # LLM 給答案了，結束
+   # 迴圈用盡 → 用現有資訊作答並註記「達迭代上限」
+```
+
+**System prompt 要點**（★沿用專案既有的 prompt 經驗★）：
+
+```
+你是米米財經的選片品質稽核員。你可以呼叫工具查詢歷史選片紀錄。
+
+稽核重點：
+1. 主體重複 —— 同一次是否選了同一家公司/同一主體的多則新聞（違反題材分散）
+2. 來源偏食 —— 三個來源（ETtoday/自由/風傳媒）是否嚴重失衡
+3. 題材集中 —— 是否連續多天都選同類型（如都是盤勢、都是個股財報）
+4. 理由品質 —— LLM 給的選片理由是否具體，還是流於空泛
+
+★ 回答前的最終自我檢查（逐條確認後才輸出）★
+- 我是否真的查了資料？還是在憑空推測？
+- 我指出的每個問題，是否都能對應到具體的 run_id？
+- 嚴重度分級是否正確？（blocking = 傷內容可信度；minor = 可接受的瑕疵）
+
+輸出格式：JSON
+{
+  "period": "查詢區間",
+  "runs_analyzed": 數量,
+  "issues": [{"type","severity","run_id","detail","suggestion"}],
+  "source_distribution": {...},
+  "summary": "一句話總結"
+}
+```
+
+> 🔴 **沿用 UPDATE 6 的關鍵經驗**：規則埋在條列清單裡 LLM 會忽略，
+> 改成「回答前的自我檢查步驟」才有效。稽核 prompt 也要這樣寫。
+
+**CLI 介面**：
+
+```python
+while True:
+    q = input("\n問題> ").strip()
+    if q in ("exit", "quit", ""):
+        break
+    run_agent(q)
+```
+
+> **★ Demo 用途：每次工具呼叫都要印出來 ★**
+> ```
+> [工具] get_recent_selections(days=7)
+> [工具] get_run_detail(run_id=12)
+> ```
+> 這樣才看得出 agent 在做多步推理（面試 demo 的重點）。
+
+**✅ 驗證（分兩階段）**：
+- **單輪**：問「最近選了哪些新聞」→ 應只呼叫 1 次工具就作答
+- **多輪**：問「這週選片品質有沒有問題」→ ★應先查 recent、發現異常後再查 detail，至少 2 輪★
+
+---
+
+### U9-4：config 與整合
+
+```python
+# config.py 新增
+AGENT_MODEL = "gpt-4o-mini"
+AGENT_MAX_ITERATIONS = 5
+AGENT_AUDIT_DEFAULT_DAYS = 7
+```
+
+`requirements.txt` 不需新增（openai / mcp 都已有）。
+
+---
+
+## 3. ★ 卡關預告（照 UPDATE 8 的經驗提前避開）★
+
+| 問題 | 對策 |
+|------|------|
+| **MCP server 的 stdout 汙染** | 已知問題，server 端 log 一律導 `stderr`（UPDATE 8 已處理，別破壞它） |
+| **子行程 python / cwd** | 沿用 `mcp_client` 現有的 `sys.executable` + `cwd=_PROJECT_ROOT`，別改 |
+| **MCP schema → OpenAI tools 格式不一致** | MCP 的 `inputSchema` 與 OpenAI 的 `parameters` 欄位名不同，需轉換函式。★先寫一個最小測試確認格式對得上★ |
+| **tool_call_id 對應** | OpenAI 要求每個 `tool_calls` 的回覆必須帶對應的 `tool_call_id`，漏了會 400 |
+| **一輪多個 tool_calls** | LLM 可能一次要求呼叫多個工具，要 for 迴圈全部執行完再一起回覆 |
+| **LLM 不呼叫工具直接編答案** | system prompt 要明講「必須先查詢真實資料，不可推測」；驗證時檢查有沒有真的呼叫 |
+| **無限迴圈** | `AGENT_MAX_ITERATIONS` 硬上限，且每輪印出當前輪數 |
+| **JSON 解析失敗** | LLM 回的 JSON 可能包 markdown code fence，需 strip 後再 parse；失敗就印原文，別 crash |
+
+---
+
+## 4. Checklist
+
+**U9-1 MCP tool**
+- [ ] `repository.get_run_detail(session, run_id)` 完成
+- [ ] `finance_news_server.py` 加 `@app.tool() get_run_detail`
+- [ ] docstring 寫清楚「做什麼 + 何時該用」
+- [ ] datetime 可 JSON 序列化
+- [ ] ✅ 驗證：真實 run_id 回傳正確
+
+**U9-2 MCP resource**
+- [ ] `@app.resource("runs://latest")` 完成
+- [ ] ✅ 驗證：client 端讀得到
+
+**U9-3 agent.py**
+- [ ] MCP 工具清單 discovery + 轉 OpenAI tools 格式
+- [ ] 決策迴圈（含 `AGENT_MAX_ITERATIONS` 上限）
+- [ ] 工具失敗 → 結構化錯誤回傳，不中斷
+- [ ] system prompt 含「回答前的自我檢查」
+- [ ] 每次工具呼叫印出（demo 用）
+- [ ] CLI `input()` 迴圈
+- [ ] ✅ 驗證：單輪問題（1 次工具呼叫）
+- [ ] ✅ 驗證：★多輪問題（≥2 次工具呼叫，展現多步推理）★
+- [ ] ✅ 驗證：弄壞 MCP server → agent 不 crash，回報錯誤
+
+**U9-4 config**
+- [ ] `AGENT_MODEL` / `AGENT_MAX_ITERATIONS` / `AGENT_AUDIT_DEFAULT_DAYS`
+- [ ] ✅ 驗證：`main.py` 完全不受影響，發片流程正常
+
+---
+
+## 5. 需要使用者確認的
+
+```
+🟠 開發中回報:
+  • system prompt 的稽核重點要不要調整（先做一版，看輸出再調）
+  • 輸出的 JSON 欄位是否夠用
+  • AGENT_MAX_ITERATIONS = 5 是否足夠（看實際多步推理需要幾輪）
 ```
 
 ---
 
-## U8-5. requirements
+## 6. 未來擴充（本階段不做）
 
 ```
-新增:
-  mcp            # MCP Python SDK(官方)
-
-→ pip install mcp
-→ ⚠️ 確認版本 + 官方文件(SDK 更新快)
-```
-
----
-
-## U8-6. ⚠️ 部署考量（GCP / UPDATE 7 已部署的話）
-
-```
-MCP server 是「本地 stdio 子行程」→ 跟主程式同一個容器一起跑:
-  • Dockerfile 不用特別改(mcp_server/ 已在 code 內,一起打包)
-  • Cloud Run Job 執行 main.py → main 內部啟動 MCP server 子行程 → 同容器
-  • ★ 不需要「另外部署一個 MCP 服務」★(stdio 同機即可)
-
-→ 對部署影響小(不是獨立網路服務)
-→ 若之後要「跨機/對外 MCP」再改 HTTP transport(這次不做)
+• 把「生圖 / 審圖 / TTS」也暴露成 MCP tools → 讓 agent 調度整條產製線
+• 稽核 agent 定期自動執行（排程）+ 有問題主動通知
+• 讓 agent 直接建議 select prompt 的具體修改內容
+• 審稿 agent（口播稿是否偏離原新聞、標題是否誇大）
+• MCP over HTTP transport（跨機 / 多 agent 共用）
 ```
 
 ---
 
-## U8-7. 開發順序（分階段,每步單獨驗）
-
-```
-階段 U8-1:MCP server 單獨測
-  → 寫 finance_news_server.py(兩個 tool)
-  → 用 MCP 官方的 inspector / 簡單 client 測「list_tools + call_tool」
-  ✅ 驗證:能列出兩個 tool、呼叫 fetch_finance_news 回候選池、
-        get_recent_selections 回歷史(先塞假 DB 資料測)
-  → server 單獨會動,才接 client
-
-階段 U8-2:MCP client 單獨測
-  → mcp_client.fetch_candidates_via_mcp()
-  ✅ 驗證:client 啟動 server 子行程 → 拿到 candidates + recent
-
-階段 U8-3:整合 main + fallback
-  → USE_MCP 分支 + try/except fallback
-  ✅ 驗證:USE_MCP=True 正常跑完整 pipeline(透過 MCP 拿新聞)
-  ✅ 驗證:★ 故意讓 MCP 掛掉(改壞 server 路徑)→ fallback 直接呼叫,發片不中斷 ★
-  ✅ 驗證:USE_MCP=False → 完全等同 UPDATE 7
-
-階段 U8-4:（可選）歷史參考進選片
-  → 把 recent 傳進 select_top_news 的 prompt
-  ✅ 驗證:agent 選片時「看得到最近發過的」(prompt 有帶入)
-```
-
----
-
-## U8-8. 修改 Checklist
-
-- [ ] U8-1:mcp_server/finance_news_server.py(list_tools + call_tool)
-- [ ] U8-1:兩個 tool(fetch_finance_news / get_recent_selections)內部呼叫既有邏輯
-- [ ] U8-1:repository.get_recent_selections(若 UPDATE 6 沒有,補上)
-- [ ] U8-1:candidates/datetime 可 JSON 序列化
-- [ ] U8-2:mcp_client.py(啟動 server + call_tool + 解析)
-- [ ] U8-3:main.py USE_MCP 分支 + ★ MCP 失敗 fallback 直接呼叫 ★
-- [ ] U8-4:config(USE_MCP / DEDUP_DAYS / MCP_SERVER_CMD)
-- [ ] U8-5:requirements 加 mcp
-- [ ] 分階段驗證(server→client→整合→fallback)
-
-### 卡關立刻停手回報
-- [ ] MCP SDK 的 API(class/裝飾器/types)與概念碼不符 → 依當前官方文件,回報
-- [ ] async / asyncio 整合到同步的 main.py 有問題
-- [ ] MCP server 子行程啟動失敗 / stdio 溝通問題
-- [ ] JSON 序列化(datetime、特殊字元)
-- [ ] 部署後容器內子行程行為異常
-
----
-
-## U8-9. 之後可擴充（本次不做）
-
-```
-• 更多 tool 上 MCP:生圖、審圖、TTS 也可暴露成 MCP tools
-  → 讓「內容生成 agent」透過 MCP 調度整條產製
-• HTTP transport:若要「跨機/多 agent 共用」→ 改 MCP over HTTP
-• 與 LangGraph 審閱結合:審閱 agent 透過 MCP 呼叫審查工具
-  → Agent(LangGraph)+ 工具(MCP)= 完整 agent 架構
-```
-
----
-
-> 📌 **這次:把「抓新聞 + 查歷史選片」封裝成 MCP server,以標準協議把工具能力暴露給選片 agent,取代硬編碼整合。** 重點是「不重寫功能,用 MCP 暴露既有能力」。stdio 本地 server(同容器子行程,部署影響小)。⚠️ MCP 失敗必須 fallback 回直接呼叫,USE_MCP 開關可退回現狀——發片穩定性優先於架構潮度。分階段:server→client→整合→驗 fallback。MCP SDK 更新快,依當前官方文件實作,不確定就停下來問,別照概念碼硬套。目標:讓米米財經的 agent 與資料源透過 MCP 解耦,對齊「工具暴露 / 結構化 context 共享 / 無硬編碼整合」的架構。
+> 📌 **核心原則再強調：分階段、每步單獨驗、絕不影響現有發片流程。**
+> 這次的成敗定義是「agent 能自己決定呼叫哪些 MCP 工具、做出多步推理、產出有用的稽核報告」，
+> 不是「功能多完整」。先讓一個問題跑通兩輪工具呼叫，再談其他。

@@ -118,3 +118,10 @@ DB_URL = "sqlite:///mimi.db"     # 本機;上雲(UPDATE 7)改持久化連線,mod
 # 把「抓新聞 + 查歷史選片」以 MCP 協議暴露成 tools 給選片 agent
 USE_MCP    = True      # False = 走原本直接呼叫(等同 UPDATE 6 現狀)
 DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考,不強制去重)
+
+# ── 選片品質稽核 agent(UPDATE 9) ───────────────────
+# 獨立 CLI(python agent.py):自然語言問歷史選片品質,LLM 用 function calling
+# 自主呼叫 MCP 工具做多步推理。純唯讀,不影響發片流程。
+AGENT_MODEL              = "gpt-4o-mini"   # 沿用現有 LLM(與 llm_service 一致)
+AGENT_MAX_ITERATIONS     = 5               # 決策迴圈硬上限(防無限迴圈)
+AGENT_AUDIT_DEFAULT_DAYS = 7               # 稽核預設查幾天

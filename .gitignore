@@ -17,6 +17,10 @@ output_llm.json
 # 資料庫(UPDATE 6)
 mimi.db
 
+# 個人面試簡報(私人,不進版控)+ Office 開啟時的暫存鎖檔
+*.pptx
+~$*
+
 # 重複/未使用的素材(本機留著,不進版控)
 # = intro.mp4 的原檔(重複)
 assets/mimi/米米開場.mp4
