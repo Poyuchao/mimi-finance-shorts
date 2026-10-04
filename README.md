@@ -8,7 +8,8 @@
 > **版本**:MVP(字卡版)→ U1 米米全程 → **U2 節目化**(米米只在頭尾)→ U3 YouTube 自動上傳
 > → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)
 > → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)
-> → **U11 LangGraph 版 Agent**(同一 agent 用 orchestration 框架重做,拿到跨題記憶 + session recovery)。
+> → **U11 LangGraph 版 Agent**(同一 agent 用 orchestration 框架重做,拿到跨題記憶 + session recovery)
+> → **U12 口播稿審稿**(writer-critic reflection:擋稿偏離原文/投資建議,偏離就重寫)。
 > 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
 
 ---
@@ -43,6 +44,7 @@
 ④a LLM 選片:從候選挑 3 則「最重要」的 + 理由(硬門檻:必須直接跟股市有關;
     並帶入近 7 天已發過的新聞 → 避免重複報導同一事件)
 ④b LLM 改寫:口播稿(親切但專業)+ headline + 結構化 highlight + video_title + hashtag
+④b+ 審稿(U12):稿 vs 原文 → 擋偏離/編造/投資建議 → 偏離就重寫(fail-open;開關)
 ④c 每則生 AI 示意圖(Gemini,Q版米米人物;失敗即 fallback 純字卡)
 ④d AI 審圖(擋編造數字/亂碼/真人/嚴重離題);不過 → 重生一次 → 再不過 → 退純字卡
 ⑤ TTS 配音:3 則新聞 script + 開場白/收尾旁白
@@ -98,6 +100,7 @@
 ├── llm_service.py       # ④ LLM 選片 + 改寫(結構化 highlight;可替換介面)
 ├── image_service.py     # ④c AI 生成新聞示意圖(Gemini;safe_generate 生圖+審圖防呆鏈)
 ├── review_service.py    # ④d AI 審圖 agent(Gemini vision;blocking/minor 分級)
+├── script_review.py     # ④b+ 口播稿審稿(U12,writer-critic reflection;純 Python 迴圈)
 ├── tts.py               # ⑤ TTS(新聞 script + 開場白/收尾旁白)
 ├── card_render.py       # ⑥ 字卡(封面/新聞卡兩版面/開場白·收尾泡泡卡)
 ├── video.py             # ⑦ 影片合成(6 片段;make_mimi_segment 疊層只用頭尾)
@@ -225,6 +228,34 @@ python main.py
 
 **設定(config.py):** `USE_IMAGE_REVIEW`(關掉 = 不審)、`REVIEW_MODEL`(視覺文字模型,非 `-image` 變體)、`REVIEW_MAX_RETRY`(1;設 0 = 不重生)、`REVIEW_TIMEOUT`(60s)。
 **審查 API 失效/逾時 → 保守視為「不通過」**(不發沒審過的圖)。
+
+---
+
+## 口播稿審稿（U12,選用）
+
+AI 審圖的**文字版** —— 改寫後、TTS 前,檢查口播稿有沒有**偏離原文**。這是 **writer-critic 的 reflection pattern**(一個產出、一個評審,不過就重寫),**用純 Python 迴圈**實作(這個簡單迴圈不需要 LangGraph,發片主線保持零框架依賴)。
+
+```
+改寫得到草稿 → critic(稿 vs 原文)→ 過? 用這稿
+                   │ 不過(blocking)
+                   ▼
+                writer 重寫(修問題、保留米米口吻)→ 再 critic …(上限 1 次)
+                   → 仍不過 → 用最後重寫版 + 大聲 log(不退回原稿,原稿才是壞的)
+```
+
+**審查分兩級:**
+
+| 級別 | 項目 | 處置 |
+|------|------|------|
+| 🔴 **blocking** | 與原文事實不符/編造、**投資建議**(紅線)、嚴重誇大斷言、完全離題 | 退回重寫 |
+| 🟡 **minor / 放行** | 語氣、用詞、口語化、**米米口吻(喵~)** —— 這是正確風格,永遠不擋 | 只記 log |
+
+> 💡 **踩過的坑(寫成工程判斷)**:critic 一直把「喵~」硬塞進 blocking(即使 prompt 禁止)。
+> **解法不是一直加 prompt,而是在 code 層加防呆網**:純風格、又無真違規訊號的項,程式直接踢出 blocking。
+> **可靠的規則用程式鎖,別全靠 prompt 哄 LLM**(prompt + code 的 defense-in-depth)。
+
+**設定(config.py):** `USE_SCRIPT_REVIEW`(關掉 = 改寫後直接用)、`SCRIPT_REVIEW_MODEL`、`SCRIPT_REVIEW_MAX_RETRY`(1)。
+**fail-open**:審稿出錯/逾時 → 用原稿,★絕不中斷發片★。
 
 ---
 
@@ -422,6 +453,7 @@ python query_runs.py --list     # 看到多一欄「觀看」
 - **稽核 Agent(U9)**:`AGENT_MODEL`、`AGENT_MAX_ITERATIONS`(5)、`AGENT_AUDIT_DEFAULT_DAYS`(7)。
 - **觀看數(U10)**:`YT_TOKEN_READONLY`(讀觀看數的獨立 token 檔)。
 - **LangGraph Agent(U11)**:`AGENT_HISTORY_KEEP`(20,每輪丟給 LLM 的訊息數)、`AGENT_CHECKPOINT_DB`(對話狀態檔)、`AGENT_RECURSION_LIMIT`(12)。
+- **口播稿審稿(U12)**:`USE_SCRIPT_REVIEW`(True;False = 改寫後直接用)、`SCRIPT_REVIEW_MODEL`、`SCRIPT_REVIEW_MAX_RETRY`(1)。
 
 ---
 

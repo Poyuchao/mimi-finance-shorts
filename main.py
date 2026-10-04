@@ -78,6 +78,23 @@ def run(platform: str = "ig") -> str:
     _step(3, "LLM 第二步:改寫口播稿")
     llm_result = svc.rewrite_scripts(picked)
     print(f"  影片標題:{llm_result['video_title']}")
+
+    # 🆕 UPDATE 12:審稿(改寫後、存檔前)——稿是否忠於原文?偏離/投資建議就重寫。
+    # ★ fail-open:審稿出錯/不過到底 → 用原稿,絕不中斷發片。USE_SCRIPT_REVIEW=False 則完全跳過。★
+    if config.USE_SCRIPT_REVIEW:
+        print(f"\n{'─' * 60}\n[+] 審稿:檢查口播稿是否忠於原文(偏離/投資建議就重寫)\n{'─' * 60}")
+        import script_review
+        n_fixed = 0
+        # picked(含原文 clean_text)與 items 順序對齊 → zip 配對
+        for i, (cand, item) in enumerate(zip(picked, llm_result["items"]), 1):
+            source = cand.get("clean_text") or cand.get("title", "")
+            fixed = script_review.safe_review_and_fix(source, item["script"])
+            if fixed != item["script"]:
+                item["script"] = fixed
+                n_fixed += 1
+                print(f"  ✏️ 第 {i} 則審稿不通過 → 已重寫")
+        print(f"  審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿")
+
     with open("output_llm.json", "w", encoding="utf-8") as f:
         json.dump(llm_result, f, ensure_ascii=False, indent=2)
 

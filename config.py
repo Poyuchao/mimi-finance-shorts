@@ -131,3 +131,8 @@ AGENT_AUDIT_DEFAULT_DAYS = 7               # 稽核預設查幾天
 AGENT_HISTORY_KEEP   = 20                              # 每輪「丟給 LLM」的最近訊息數(防 context 爆;存檔不受影響)
 AGENT_CHECKPOINT_DB  = "langgraph_checkpoints.sqlite"  # 對話狀態存這(與 mimi.db 分開;已 gitignore)
 AGENT_RECURSION_LIMIT = 12                             # graph 步數上限(一輪=agent+tools 兩步 → ≈6 輪);超過→fallback
+
+# 🆕 UPDATE 12:口播稿審稿 critic(writer-critic reflection)
+USE_SCRIPT_REVIEW       = True          # 開關(False = 改寫後直接用,等同 U11 現狀)
+SCRIPT_REVIEW_MODEL     = "gpt-4o-mini" # 審稿/重寫用的 LLM
+SCRIPT_REVIEW_MAX_RETRY = 1             # 審不過 → 帶問題重寫幾次(再不過 → fail-open 用原稿)
