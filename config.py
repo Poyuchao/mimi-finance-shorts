@@ -126,3 +126,8 @@ DEDUP_DAYS = 7         # get_recent_selections 查幾天(給 agent 參考,不強
 AGENT_MODEL              = "gpt-4o-mini"   # 沿用現有 LLM(與 llm_service 一致)
 AGENT_MAX_ITERATIONS     = 5               # 決策迴圈硬上限(防無限迴圈)
 AGENT_AUDIT_DEFAULT_DAYS = 7               # 稽核預設查幾天
+
+# 🆕 UPDATE 11:LangGraph 版 agent(agent_langgraph.py)
+AGENT_HISTORY_KEEP   = 20                              # 每輪「丟給 LLM」的最近訊息數(防 context 爆;存檔不受影響)
+AGENT_CHECKPOINT_DB  = "langgraph_checkpoints.sqlite"  # 對話狀態存這(與 mimi.db 分開;已 gitignore)
+AGENT_RECURSION_LIMIT = 12                             # graph 步數上限(一輪=agent+tools 兩步 → ≈6 輪);超過→fallback

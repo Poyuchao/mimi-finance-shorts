@@ -13,3 +13,8 @@ google-auth-httplib2        # google auth transport
 google-genai                # Gemini 圖像生成 + 審圖(UPDATE 4/5)
 SQLAlchemy                  # 資料庫記錄(UPDATE 6)
 mcp                         # MCP Python SDK(UPDATE 8)
+python-pptx                 # 產面試簡報 .pptx(選用)
+langgraph                   # LangGraph agent 框架(UPDATE 11)
+langchain-openai            # LangGraph 用的 LLM 介面(UPDATE 11)
+langchain-mcp-adapters      # 把既有 MCP server 的工具載入 LangGraph(UPDATE 11)
+langgraph-checkpoint-sqlite # checkpointer:跨題記憶 + session recovery(UPDATE 11)

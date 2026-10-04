@@ -7,7 +7,8 @@
 >
 > **版本**:MVP(字卡版)→ U1 米米全程 → **U2 節目化**(米米只在頭尾)→ U3 YouTube 自動上傳
 > → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)
-> → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)。
+> → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)
+> → **U11 LangGraph 版 Agent**(同一 agent 用 orchestration 框架重做,拿到跨題記憶 + session recovery)。
 > 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
 
 ---
@@ -80,6 +81,7 @@
 | 上傳 | google-api-python-client + OAuth 2.0(YouTube Data API v3) |
 | 資料庫 | SQLAlchemy 2.0 + SQLite |
 | 工具協議 | `mcp`(Model Context Protocol,FastMCP + stdio) |
+| Agent 框架 | LangGraph（StateGraph + SqliteSaver checkpointer）+ langchain-mcp-adapters（U11) |
 | 米米素材 | AI 圖生影片工具(如 DeeVid)手動預生成,直式 9:16 |
 
 ---
@@ -115,7 +117,8 @@
 │   └── finance_news_server.py  # FastMCP:fetch_finance_news / get_recent_selections
 │                        #          get_run_detail / get_video_stats + resource runs://latest
 ├── mcp_client.py        # 🔌 MCP Client(啟 server 子行程 + call_tool;可單獨跑測試)
-├── agent.py             # 🤖 選片品質稽核 agent(U9,function calling 決策迴圈,純唯讀)
+├── agent.py             # 🤖 選片品質稽核 agent(U9,手刻 function calling 迴圈,純唯讀)
+├── agent_langgraph.py   # 🤖 同一 agent 的 LangGraph 版(U11,StateGraph + checkpointer 跨題記憶)
 ├── refresh_stats.py     # 📊 撈 YouTube 觀看數 → 更新 DB(U10,寫入類維運)
 ├── query_runs.py        # 查詢 DB:每次「選了哪 3 則、為什麼」+ 觀看數
 ├── assets/mimi/         # 🐱 米米素材(手動放,重複用)
@@ -360,8 +363,27 @@ python agent.py
 - **防失控**:`AGENT_MAX_ITERATIONS=5` 硬上限;工具失敗回結構化錯誤、不中斷;弄壞 MCP server → CLI 報錯不 crash。
 - **不碰發片流程**:純唯讀,`main.py` 完全不受影響。
 
-> 💡 踩過的兩個真實 bug(都寫成雙語工程日誌 `INTERVIEW_NOTES.md`):
-> ① MCP 序列化邊界造成 DB 無聲漏記(容錯 ≠ 靜音);② agent 把「即時候選」當「已選中」並捏造理由(工具語意歧義,非模型笨)。
+> 💡 踩過的真實 bug(都寫成雙語工程日誌 `INTERVIEW_NOTES.md`):
+> ① MCP 序列化邊界造成 DB 無聲漏記(容錯 ≠ 靜音);② agent 把「即時候選」當「已選中」並捏造理由;
+> ③ 工具回空結果時仍捏造新聞 → 加「空就說沒有、資料只能來自工具」鐵則 + 自我檢查。
+
+---
+
+## LangGraph 版 Agent（U11,選用）
+
+把**同一個稽核 agent** 用 **LangGraph(orchestration 框架)重做一版**,`agent.py`(手刻版)完全不動,兩版並存。
+
+```powershell
+python agent_langgraph.py
+```
+
+- **為什麼**:取得「用過 orchestration 框架」的經驗(對應 agent-harness 類 JD),並**幾乎免費**拿到手刻版缺的能力。
+- **手刻 → graph 的對照**:`for` 迴圈 → graph 的 agent↔tools 循環;`messages` list → `State`(add_messages reducer);`if not tool_calls` → `tools_condition`;`MAX_ITERATIONS` → `recursion_limit`。
+- **跨題記憶 + session recovery**:`SqliteSaver` checkpointer + `thread_id`,對話狀態存在 `langgraph_checkpoints.sqlite`(與 `mimi.db` 分開)—— **重開行程還記得**(手刻版做不到)。
+- **MCP server 不改**:用 `langchain-mcp-adapters` 載入既有 MCP 工具。
+- **重現手刻版三巧思**:印每次工具呼叫、fail-open(`handle_tool_errors`)、達上限 fallback(接 `GraphRecursionError` → 用現有資訊逼答)。
+- **為什麼兩版都留**:① 證明「懂底層 + 會用框架」② 零依賴 fallback(框架 API 變動時手刻版還能跑)③ 對照本身是教材。
+- 詳細修改指引:`UPDATE11_LangGraph_修改指引.md`。
 
 ---
 
@@ -399,6 +421,7 @@ python query_runs.py --list     # 看到多一欄「觀看」
 - **MCP**:`USE_MCP`(True;False = 走直接呼叫)、`DEDUP_DAYS`(7,查幾天歷史給選片 agent 參考)。
 - **稽核 Agent(U9)**:`AGENT_MODEL`、`AGENT_MAX_ITERATIONS`(5)、`AGENT_AUDIT_DEFAULT_DAYS`(7)。
 - **觀看數(U10)**:`YT_TOKEN_READONLY`(讀觀看數的獨立 token 檔)。
+- **LangGraph Agent(U11)**:`AGENT_HISTORY_KEEP`(20,每輪丟給 LLM 的訊息數)、`AGENT_CHECKPOINT_DB`(對話狀態檔)、`AGENT_RECURSION_LIMIT`(12)。
 
 ---
 
