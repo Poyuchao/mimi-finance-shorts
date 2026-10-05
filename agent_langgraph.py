@@ -188,4 +188,10 @@ async def cli() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(cli())
+    # ★ Ctrl+C 收尾:中斷送到主執行緒的 event loop,await 收到的是 CancelledError,
+    #   cli() 裡的 except KeyboardInterrupt 接不到;asyncio.run 收尾會再 raise 一個
+    #   KeyboardInterrupt(落在 cli() 外)→ 在這裡接住,只印「再見!」不吐堆疊。★
+    try:
+        asyncio.run(cli())
+    except KeyboardInterrupt:
+        print("\n再見!")
