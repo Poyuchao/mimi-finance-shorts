@@ -9,7 +9,8 @@
 > → U4 AI 示意圖 → U5 AI 審圖 agent → U6 選片記錄(DB)→ **U8 MCP Server**(工具能力標準化)
 > → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)
 > → **U11 LangGraph 版 Agent**(同一 agent 用 orchestration 框架重做,拿到跨題記憶 + session recovery)
-> → **U12 口播稿審稿**(writer-critic reflection:擋稿偏離原文/投資建議,偏離就重寫)。
+> → **U12 口播稿審稿**(writer-critic reflection:擋稿偏離原文/投資建議,偏離就重寫)
+> → **U13 上下游對齊**(改寫 prompt 加數字鐵則/不給投資建議,從源頭少製造問題;審稿放行合理四捨五入)。
 > 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
 
 ---
@@ -256,6 +257,11 @@ AI 審圖的**文字版** —— 改寫後、TTS 前,檢查口播稿有沒有**�
 
 **設定(config.py):** `USE_SCRIPT_REVIEW`(關掉 = 改寫後直接用)、`SCRIPT_REVIEW_MODEL`、`SCRIPT_REVIEW_MAX_RETRY`(1)。
 **fail-open**:審稿出錯/逾時 → 用原稿,★絕不中斷發片★。
+
+> 🔧 **U13 上下游對齊**:實跑發現每次 2/3 則被審稿打回(編數字、投資語氣)—— 審稿沒壞,是**上游改寫一直製造同樣的問題**。
+> 於是把審稿的標準**往上游 rewrite prompt 複製一份**(【數字鐵則】依原文、不新增;【不給投資建議】),讓源頭就少犯錯,審稿回歸「偶爾才觸發的保險」。
+> 同時釐清**四捨五入**:合理約略(31.75 →「約 31.8」)兩邊都放行,但★四捨五入後的數字不得拿去講「突破/升破」關卡★(31.75 沒到 31.8)。
+> 工程判斷:**最後防線不該天天滿載**;上下游要用同一套標準,不然審稿與改寫會互相拉扯。
 
 ---
 
