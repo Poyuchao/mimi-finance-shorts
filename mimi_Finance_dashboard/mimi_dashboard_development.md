@@ -87,7 +87,8 @@ export async function getRun(id)  { return (await fetch(`${BASE}/runs/${id}`)).j
 // SSE:回傳 EventSource,呼叫端自己掛 onmessage / addEventListener(事件型別見後端指引 §4)
 export function openRunStream(onEvent) {
   const es = new EventSource(`${BASE}/run/stream`);   // 後端:GET 直接開流(見後端指引)
-  ["stage","log","review","done","error"].forEach(t =>   // ★ review = 審稿/審圖 reflection
+  // review = 審稿/審圖 reflection;progress = 影片合成 %
+  ["stage","log","review","progress","done","error"].forEach(t =>
     es.addEventListener(t, e => onEvent(t, JSON.parse(e.data))));
   return es;   // 呼叫端記得在 done/error 或 unmount 時 es.close()
 }

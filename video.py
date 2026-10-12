@@ -61,6 +61,38 @@ def _plain_segment(card_path: str, duration: float, audio_path: str | None = Non
     return clip
 
 
+def _make_logger(on_progress):
+    """🆕 UPDATE 15:把 MoviePy(proglog)的寫檔進度轉成 on_progress(pct) 回呼。
+
+    on_progress 失敗/None 一律不影響合成。只在百分比「變化」時回報(節流)。
+    """
+    if on_progress is None:
+        return None
+    try:
+        import proglog
+    except Exception:  # noqa: BLE001 — 沒有 proglog 就不報進度,不影響合成
+        return None
+
+    class _CB(proglog.ProgressBarLogger):
+        _last = -1
+
+        def bars_callback(self, bar, attr, value, old_value=None):
+            if attr != "index":
+                return
+            total = (self.bars.get(bar) or {}).get("total")
+            if not total:
+                return
+            pct = int(value / total * 100)
+            if pct != self._last:
+                self._last = pct
+                try:
+                    on_progress(pct)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return _CB()
+
+
 def compose(
     cards: dict,
     news_audio: list[dict],
@@ -69,16 +101,19 @@ def compose(
     out_path: str = OUT_PATH,
     cover_dur: float = 3.0,
     closing_dur: float = 3.0,
+    on_progress=None,
 ) -> str:
     """🆕 UPDATE 2:4 階段 6 片段合成。依 config.USE_MIMI 分流。
 
     cards: {"cover","news":[...], 米米版另有 "opening"/"closing";純版另有 "closing_plain"}
     news_audio: [{audio_path,duration}, ...](對齊 cards["news"])
     opening_audio / closing_audio: {audio_path,duration}(米米版才需要)
+    on_progress(pct):🆕 合成進度回呼(0~100),給控制台顯示;None = 不回報。
     """
     if config.USE_MIMI:
-        return _compose_mimi(cards, news_audio, opening_audio, closing_audio, out_path, cover_dur)
-    return _compose_plain(cards, news_audio, out_path, cover_dur, closing_dur)
+        return _compose_mimi(cards, news_audio, opening_audio, closing_audio,
+                             out_path, cover_dur, on_progress)
+    return _compose_plain(cards, news_audio, out_path, cover_dur, closing_dur, on_progress)
 
 
 def _news_segments(cards, news_audio):
@@ -98,7 +133,8 @@ def _mimi_or_fallback(clip_path, transp_card, dur, audio_path):
     return _plain_segment(transp_card, dur, audio_path)
 
 
-def _compose_mimi(cards, news_audio, opening_audio, closing_audio, out_path, cover_dur) -> str:
+def _compose_mimi(cards, news_audio, opening_audio, closing_audio, out_path, cover_dur,
+                  on_progress=None) -> str:
     """米米頭尾版:封面 + 米米開場白 + 3 純字卡新聞 + 米米收尾。"""
     fps = config.VIDEO["fps"]
     segs = []
@@ -118,14 +154,15 @@ def _compose_mimi(cards, news_audio, opening_audio, closing_audio, out_path, cov
 
     final = concatenate_videoclips(segs, method="compose")
     logger.info("合成中(米米頭尾版,6 片段)… 總長約 %.1f 秒 → %s", final.duration, out_path)
-    final.write_videofile(out_path, fps=fps, codec="libx264", audio_codec="aac")
+    final.write_videofile(out_path, fps=fps, codec="libx264", audio_codec="aac",
+                          logger=_make_logger(on_progress))
     final.close()
     for s in segs:
         s.close()
     return out_path
 
 
-def _compose_plain(cards, news_audio, out_path, cover_dur, closing_dur) -> str:
+def _compose_plain(cards, news_audio, out_path, cover_dur, closing_dur, on_progress=None) -> str:
     """純字卡版(USE_MIMI=False):封面 + 3 純字卡新聞 + 純字卡結尾(來源),無米米。"""
     fps = config.VIDEO["fps"]
     segs = []
@@ -135,7 +172,8 @@ def _compose_plain(cards, news_audio, out_path, cover_dur, closing_dur) -> str:
 
     final = concatenate_videoclips(segs, method="compose")
     logger.info("合成中(純字卡版,無米米)… 總長約 %.1f 秒 → %s", final.duration, out_path)
-    final.write_videofile(out_path, fps=fps, codec="libx264", audio_codec="aac")
+    final.write_videofile(out_path, fps=fps, codec="libx264", audio_codec="aac",
+                          logger=_make_logger(on_progress))
     final.close()
     for s in segs:
         s.close()

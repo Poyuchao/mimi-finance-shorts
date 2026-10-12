@@ -85,6 +85,7 @@ def emit(kind: str, data: dict):
 - `review`:審稿/審圖的 reflection 結果(給「審查流程」面板)
   `{"type":"script"|"image","index":2,"status":"pass"|"rewrite"|"fallback","blocking":["..."],"before":"原稿","after":"改寫後"}`
   (審圖沒有 before/after,只有 status + blocking)
+- `progress`:影片合成百分比 `{"pct":24}`(MoviePy 寫檔進度,由 `video.compose(on_progress=...)` 經 proglog 攔截)
 - `done`:`{"path":"output/final.mp4","seconds":58,"youtube":"...","run_id":38}`
 - `error`:`{"text":"..."}`
 

@@ -40,6 +40,11 @@ export default function LiveView() {
         setLogs((prev) => [...prev, { level: data.level || "info", text: data.text }]);
       } else if (type === "review") {
         setReviews((prev) => [...prev, data]);
+      } else if (type === "progress") {
+        // 合成進度:更新進行中那步(影片合成)的副標為「合成中 X%」
+        setStages((prev) =>
+          prev.map((s) => (s.status === "run" ? { ...s, sub: `合成中 ${data.pct}%` } : s))
+        );
       } else if (type === "done") {
         finishedRef.current = true;
         setStages((prev) => prev.map((s) => ({ ...s, status: "done" })));
