@@ -27,7 +27,11 @@ from publisher import youtube
 logger = logging.getLogger("refresh_stats")
 
 
-def refresh() -> None:
+def refresh() -> dict:
+    """撈所有已上傳影片的觀看數寫回 DB。回傳摘要 {total, updated, failed}。
+
+    ★單支失敗不影響其他支;首次需 youtube.readonly 授權(開瀏覽器,之後用 token_readonly.json)。★
+    """
     init_db()
     session = get_session()
     try:
@@ -36,7 +40,7 @@ def refresh() -> None:
         ).all()
         if not runs:
             print("(沒有已上傳的影片可撈)")
-            return
+            return {"total": 0, "updated": 0, "failed": 0}
 
         print(f"準備撈 {len(runs)} 支影片的觀看數…(首次會開瀏覽器授權)")
         yt = youtube.get_read_service()   # ★首次:開瀏覽器同意 readonly★
@@ -60,6 +64,7 @@ def refresh() -> None:
                 logger.warning("run %s 撈觀看數失敗:%s", r.id, exc)
 
         print(f"\n完成:更新 {ok}/{len(runs)} 支(其餘見上方警告)")
+        return {"total": len(runs), "updated": ok, "failed": len(runs) - ok}
     finally:
         session.close()
 
