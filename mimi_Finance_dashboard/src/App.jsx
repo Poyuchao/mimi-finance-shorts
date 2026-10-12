@@ -1,6 +1,7 @@
 import { useState } from "react";
 import DashboardView from "./views/DashboardView.jsx";
 import LiveView from "./views/LiveView.jsx";
+import AuditView from "./views/AuditView.jsx";
 
 const TABS = [
   ["dash", "總覽"],
@@ -33,11 +34,11 @@ export default function App() {
       </div>
 
       <div className="wrap">
-        {tab === "dash" && <DashboardView />}
-        {tab === "live" && <LiveView />}
-        {tab === "audit" && (
-          <div className="placeholder">稽核 Agent — 待 chunk 3(/audit SSE)接上後實作。</div>
-        )}
+        {/* 三個分頁都保持掛載,只切顯示(hidden)——
+            否則切 tab 會卸載即時跑片頁,正在跑的進度與 SSE 連線都會中斷。 */}
+        <div hidden={tab !== "dash"}><DashboardView /></div>
+        <div hidden={tab !== "live"}><LiveView /></div>
+        <div hidden={tab !== "audit"}><AuditView /></div>
         <p className="foot">米米財經 控制台 · 資料來自本機 FastAPI(讀 mimi.db)。</p>
       </div>
     </>

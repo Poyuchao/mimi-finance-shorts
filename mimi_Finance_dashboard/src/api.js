@@ -27,4 +27,12 @@ export function openRunStream(onEvent) {
   return es;
 }
 
-// chunk 3 會加:openAuditStream
+// 稽核 agent SSE:串流工具呼叫 + 最終答案;收到 answer/error 後務必 es.close()
+export function openAuditStream(question, thread, onEvent) {
+  const u = `${BASE}/audit/stream?q=${encodeURIComponent(question)}&thread=${encodeURIComponent(thread || "dashboard")}`;
+  const es = new EventSource(u);
+  ["tool", "answer", "error"].forEach((t) =>
+    es.addEventListener(t, (e) => onEvent(t, JSON.parse(e.data)))
+  );
+  return es;
+}
