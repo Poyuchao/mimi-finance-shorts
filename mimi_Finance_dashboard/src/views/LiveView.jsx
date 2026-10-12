@@ -1,13 +1,65 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { openRunStream } from "../api.js";
 
 const LV = { info: "INFO", warn: "WARN", ok: " OK ", err: "ERR " };
 
+// ── 審查結果(審稿/審圖 reflection),插在時間軸對應步驟底下 ──
+function revSummary(list) {
+  const img = list[0].type === "image";
+  let ps = 0, rw = 0, fb = 0;
+  list.forEach((x) => { if (x.status === "pass") ps++; else if (x.status === "rewrite") rw++; else fb++; });
+  if (!rw && !fb) return `${ps}/${list.length} 通過`;
+  const parts = [];
+  if (rw) parts.push(`${rw}${img ? " 重生" : " 重寫"}`);
+  if (fb) parts.push(`${fb}${img ? " 退字卡" : " 用最後版"}`);
+  if (ps) parts.push(`${ps} 通過`);
+  return parts.join(" · ");
+}
+
+function revTag(r) {
+  const img = r.type === "image";
+  if (r.status === "rewrite") return img ? "✏️ 重生後通過" : "✏️ 重寫後通過";
+  // fallback:審圖 = 兩輪沒過、那則不放圖改純字卡;審稿 = 重寫到上限、用最後重寫版
+  return img ? "⚠ 未通過,退回純字卡" : "⚠ 重寫上限,用最後重寫版";
+}
+
+function RevBlock({ list }) {
+  const label = list[0].type === "image" ? "審圖" : "審稿";
+  const pass = list.filter((r) => r.status === "pass");
+  const bad = list.filter((r) => r.status !== "pass");
+  return (
+    <div className="step-rev">
+      {pass.length > 0 && (
+        <div className="rv-chips">
+          {pass.map((r) => <span className="rv-chip" key={r.index}>{label} #{r.index} ✓</span>)}
+        </div>
+      )}
+      {bad.map((r) => (
+        <div className={"rv " + r.status} key={r.index}>
+          <div className="rv-top">
+            <span className="rv-tag s">{label}</span>
+            第 {r.index} 則
+            <span className={"rv-tag " + r.status}>{revTag(r)}</span>
+          </div>
+          {r.blocking && r.blocking.length > 0 && (
+            <div className="blk">🔴 擋下:{r.blocking.join("；")}</div>
+          )}
+          {r.before && r.after && r.before !== r.after && (
+            <div className="ba">
+              <div className="box"><span className="k">原稿</span>{r.before}</div>
+              <div className="box after"><span className="k">改寫後</span>{r.after}</div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function LiveView() {
   const [running, setRunning] = useState(false);
-  const [stages, setStages] = useState([]);   // [{name, sub, status}]
+  const [stages, setStages] = useState([]);   // [{name, sub, status, reviews?}]
   const [logs, setLogs] = useState([]);        // [{level, text}]
-  const [reviews, setReviews] = useState([]);  // [{type, index, status, blocking, before, after}]
   const [done, setDone] = useState(null);
   const [err, setErr] = useState(null);
   const esRef = useRef(null);
@@ -28,7 +80,7 @@ export default function LiveView() {
   function start() {
     if (running) return;
     finishedRef.current = false;
-    setRunning(true); setStages([]); setLogs([]); setReviews([]); setDone(null); setErr(null);
+    setRunning(true); setStages([]); setLogs([]); setDone(null); setErr(null);
 
     const es = openRunStream((type, data) => {
       if (type === "stage") {
@@ -39,7 +91,15 @@ export default function LiveView() {
       } else if (type === "log") {
         setLogs((prev) => [...prev, { level: data.level || "info", text: data.text }]);
       } else if (type === "review") {
-        setReviews((prev) => [...prev, data]);
+        // pipeline 依序執行 → 審查結果一定在對應步驟跑的當下送來,掛到「正在跑」的那一步
+        setStages((prev) => {
+          let idx = prev.findIndex((s) => s.status === "run");
+          if (idx === -1) idx = prev.length - 1;
+          if (idx === -1) return prev;
+          return prev.map((s, i) =>
+            i === idx ? { ...s, reviews: [...(s.reviews || []), data] } : s
+          );
+        });
       } else if (type === "progress") {
         // 合成進度:更新進行中那步(影片合成)的副標為「合成中 X%」
         setStages((prev) =>
@@ -89,43 +149,19 @@ export default function LiveView() {
         <div className="steps">
           {stages.length === 0 && <div className="note">按「立即跑一支」開始。</div>}
           {stages.map((s, i) => (
-            <div className={"step st-" + s.status} key={i}>
-              <span className="ic">{s.status === "done" ? "✓" : s.status === "run" ? "•" : i + 1}</span>
-              <span>
-                <span className="nm">{s.name}</span>
-                {s.sub ? <><br /><span className="sub">{s.sub}</span></> : null}
-              </span>
-              <span className="note mono">{s.status === "run" ? "…" : s.status === "done" ? "done" : ""}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="rv-head">🔍 審查流程(reflection:critic 抓問題 → writer 重寫 / 重生)</div>
-        <div className="reviews">
-          {reviews.length === 0 && (
-            <div className="note">跑到「審稿 / 審圖」時,這裡會顯示 critic 擋了什麼、改寫前後對照。</div>
-          )}
-          {reviews.map((r, i) => (
-            <div className={"rv " + (r.status === "pass" ? "pass" : "rewrite")} key={i}>
-              <div className="rv-top">
-                <span className="rv-tag s">{r.type === "script" ? "審稿" : "審圖"}</span>
-                第 {r.index} 則
-                {r.status === "pass"
-                  ? <span className="rv-tag pass">✓ 通過</span>
-                  : r.status === "fallback"
-                    ? <span className="rv-tag rewrite">⚠ 重寫上限,用最後版</span>
-                    : <span className="rv-tag rewrite">✏️ 重寫</span>}
+            <Fragment key={i}>
+              <div className={"step st-" + s.status}>
+                <span className="ic">{s.status === "done" ? "✓" : s.status === "run" ? "•" : i + 1}</span>
+                <span>
+                  <span className="nm">{s.name}</span>
+                  {s.sub ? <><br /><span className="sub">{s.sub}</span></> : null}
+                </span>
+                {s.reviews && s.reviews.length > 0
+                  ? <span className="rv-sum">{revSummary(s.reviews)}</span>
+                  : <span className="note mono">{s.status === "run" ? "…" : s.status === "done" ? "done" : ""}</span>}
               </div>
-              {r.status !== "pass" && r.blocking && r.blocking.length > 0 && (
-                <div className="blk">🔴 擋下:{r.blocking.join("；")}</div>
-              )}
-              {r.status !== "pass" && r.before && r.after && (
-                <div className="ba">
-                  <div className="box"><span className="k">原稿</span>{r.before}</div>
-                  <div className="box after"><span className="k">改寫後</span>{r.after}</div>
-                </div>
-              )}
-            </div>
+              {s.reviews && s.reviews.length > 0 && <RevBlock list={s.reviews} />}
+            </Fragment>
           ))}
         </div>
 

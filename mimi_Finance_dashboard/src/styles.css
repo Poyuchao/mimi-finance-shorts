@@ -107,11 +107,15 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono
 .term .info{color:#6ab0ff} .term .warn{color:#e3a94e} .term .ok{color:#4bc187} .term .err{color:#f2756d} .term .muted{color:#5b667d}
 .donebox{border:1px solid var(--ok);background:var(--down-bg);color:var(--ok);border-radius:10px;padding:10px 14px;font-size:13px}
 .errbox{border:1px solid var(--up);background:var(--up-bg);color:var(--up);border-radius:10px;padding:10px 14px;font-size:13px}
-/* 審查流程面板 */
-.rv-head{margin-top:20px;font-weight:600;font-size:13px;color:var(--ink-2)}
-.reviews{display:flex;flex-direction:column;gap:8px;margin-top:8px;min-height:28px}
+/* 審查結果(插在時間軸步驟底下) */
+.step-rev{margin:0 8px 8px 46px;display:flex;flex-direction:column;gap:6px}
+@media(max-width:560px){.step-rev{margin-left:8px}}
+.rv-chips{display:flex;gap:6px;flex-wrap:wrap}
+.rv-chip{font-size:11.5px;font-weight:600;color:var(--ok);background:var(--down-bg);border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);border-radius:999px;padding:2px 9px}
+.rv-sum{font-size:11.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
 .rv{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
-.rv.pass{border-left:3px solid var(--ok)} .rv.rewrite{border-left:3px solid var(--warn)}
+.rv.pass{border-left:3px solid var(--ok)} .rv.rewrite{border-left:3px solid var(--warn)} .rv.fallback{border-left:3px solid var(--up)}
+.rv-tag.fallback{color:var(--up);background:var(--up-bg)}
 .rv-top{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
 .rv-tag{font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:5px;letter-spacing:.03em}
 .rv-tag.s{color:var(--accent);background:var(--accent-bg)}

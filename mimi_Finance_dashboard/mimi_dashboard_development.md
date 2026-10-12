@@ -46,9 +46,9 @@ mimi_Finance_dashboard/
     │   ├── LatestRun.jsx           # 最近一次 run 大卡(3 則新聞 + 影片 + 審稿摘要)
     │   ├── RunsTable.jsx           # 過往 runs 表
     │   ├── NewsItem.jsx            # 單則新聞卡(來源/理由/漲跌 chip)
-    │   ├── LiveRun.jsx             # 即時跑片:StageList + 審查流程面板 + LogConsole
-    │   ├── StageList.jsx           # stage 時間軸(pending/run/done)
-    │   ├── ReviewPanel.jsx         # 審查流程(審稿/審圖 reflection 卡片;接 review 事件)
+    │   ├── LiveRun.jsx             # 即時跑片:StageList(含審查結果)+ LogConsole
+    │   ├── StageList.jsx           # stage 時間軸(pending/run/done),審稿/審圖結果插在對應步驟底下
+    │   ├── RevBlock.jsx            # 單一步驟底下的審查結果(通過小標籤 + 重寫/退回卡片)
     │   ├── LogConsole.jsx          # 深色終端機 log 區塊
     │   └── AuditChat.jsx           # 稽核對話框(chips + 輸入 + 工具呼叫串流)
     └── views/
@@ -69,9 +69,11 @@ mimi_Finance_dashboard/
 
 > 漲跌顏色:**台股慣例紅漲綠跌**(`up` 紅 / `down` 綠 / `flat` 灰),token 名用 `--up/--down/--flat`,別用西方習慣。
 
-**審查流程面板(reflection,放在 stage 時間軸與 log 之間):** 接 `review` SSE 事件,每則審稿/審圖一張卡:
-- `status=pass` → 綠「✓ 通過」;`rewrite` → 橘卡,顯示🔴擋下理由;審稿再附 **原稿 → 改寫後** 左右對照;`fallback` → 重寫到上限、用最後版。
-- 這是 demo 主角(critic 抓問題 → writer 重寫可視化),所以擺在 log **上方**;log 當輔助放最下。
+**審查結果(reflection,直接插在時間軸對應步驟底下):** 接 `review` SSE 事件。pipeline 依序執行,所以收到結果時掛到「當下正在跑」的那一步(審稿 → 「審稿 critic」、審圖 → 「AI 生圖 + 審圖」),後端不用標步驟。
+- 步驟列右側顯示摘要(例:`3/3 通過`、`1 重生 · 1 退字卡 · 1 通過`)。
+- `pass` 縮成綠色小標籤;`rewrite`(橘)/ `fallback`(紅)展開成卡片,附🔴擋下理由,審稿再附 **原稿 → 改寫後** 對照。
+- `fallback` 的意思依類型不同:審稿 = 重寫到上限、用最後重寫版;審圖 = 兩輪沒過、那則不放圖改純字卡。
+- log 放在最下方當輔助細節。
 
 ---
 
