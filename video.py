@@ -81,7 +81,9 @@ def _make_logger(on_progress):
 
         def bars_callback(self, bar, attr, value, old_value=None):
             super().bars_callback(bar, attr, value, old_value)   # 終端機進度條照舊
-            if attr != "index":
+            # 只回報影格那條(frame_index);音訊那條(chunk)很快跑完,
+            # 一起回報會讓前端先閃一次 0→100% 再從 0 重跑。
+            if attr != "index" or bar != "frame_index":
                 return
             total = (self.bars.get(bar) or {}).get("total")
             if not total:
