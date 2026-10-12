@@ -74,10 +74,13 @@ def _make_logger(on_progress):
     except Exception:  # noqa: BLE001 — 沒有 proglog 就退回預設終端機進度條
         return "bar"
 
-    class _CB(proglog.ProgressBarLogger):
+    # ★ 繼承 MoviePy 預設的 tqdm 進度條:先照常印終端機(server console 看得到),
+    #   再額外把 % 回報給 on_progress(控制台前端)。★
+    class _CB(proglog.TqdmProgressBarLogger):
         _last = -1
 
         def bars_callback(self, bar, attr, value, old_value=None):
+            super().bars_callback(bar, attr, value, old_value)   # 終端機進度條照舊
             if attr != "index":
                 return
             total = (self.bars.get(bar) or {}).get("total")
