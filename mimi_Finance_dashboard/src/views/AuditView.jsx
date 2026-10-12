@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { openAuditStream } from "../api.js";
 
 const PRESETS = [
@@ -74,10 +76,21 @@ export default function AuditView() {
     setBusy(false);
   }
 
-  function onSubmit(e) {
-    e.preventDefault();
+  function submit() {
+    if (busy || !input.trim()) return;
     ask(input);
     setInput("");
+  }
+  function onSubmit(e) {
+    e.preventDefault();
+    submit();
+  }
+  function onKeyDown(e) {
+    // Enter 送出;Shift+Enter 換行(textarea 預設行為)
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
   }
 
   const fmtArgs = (args) =>
@@ -115,7 +128,14 @@ export default function AuditView() {
                     <span className="toolchip" key={j}>🔧 <b>{t.name}</b>({fmtArgs(t.args)})</span>
                   ))}
                   {m.answer != null ? (
-                    <div style={{ marginTop: (m.tools || []).length ? 8 : 0 }}>{m.answer}</div>
+                    <div className="md" style={{ marginTop: (m.tools || []).length ? 8 : 0 }}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{ a: (props) => <a target="_blank" rel="noreferrer" {...props} /> }}
+                      >
+                        {m.answer}
+                      </ReactMarkdown>
+                    </div>
                   ) : m.error != null ? (
                     <div className="errbox" style={{ marginTop: 8 }}>✗ {m.error}</div>
                   ) : (
@@ -128,10 +148,12 @@ export default function AuditView() {
         </div>
 
         <form className="composer" onSubmit={onSubmit}>
-          <input
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="自己問問題…例如:run 34 為什麼這樣選?"
+            onKeyDown={onKeyDown}
+            rows={1}
+            placeholder="自己問問題…(Enter 送出,Shift+Enter 換行)"
             disabled={busy}
           />
           <button className="btn" type="submit" disabled={busy || !input.trim()}>送出</button>

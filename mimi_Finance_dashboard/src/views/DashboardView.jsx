@@ -73,7 +73,6 @@ function KpiRow({ stats }) {
   const kpis = [
     [fmt(stats.published), "已發布影片", `共 ${fmt(stats.runs)} 次執行(其餘為測試)`],
     [fmt(stats.total_views), "累計觀看", "YouTube Shorts"],
-    [fmt(stats.avg_views), "平均每支觀看", "已發布影片"],
     [fmt(stats.runs), "總執行次數", "含測試重跑"],
   ];
   return (
