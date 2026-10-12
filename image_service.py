@@ -162,17 +162,27 @@ def _generate_once(item: dict, idx: int, out_path: str, fix_issues: list[str]) -
     return None
 
 
-def safe_generate(item: dict, idx: int) -> str | None:
+def safe_generate(item: dict, idx: int, on_review=None) -> str | None:
     """為第 idx 則新聞生一張圖,並(UPDATE 5)送 AI 審圖。
 
     流程:生圖 → 審圖 → 不通過就「帶著問題」重生 → 再審 …
     兩輪都不過 → 回 None = 該則退純字卡。
 
     ★任何失敗都回 None,絕不 raise、不中斷 pipeline(影片照常產出上傳)。★
+    on_review(dict):🆕 UPDATE 15,把審圖結果回報給上層(控制台 UI 用);
+        {"status": "pass"|"rewrite"|"fallback", "blocking": [...]}。失敗不影響發片。
     """
     out_path = os.path.join(config.IMAGE_DIR, f"news_{idx}.png")
     rounds = 1 + (config.REVIEW_MAX_RETRY if config.USE_IMAGE_REVIEW else config.IMAGE_RETRY)
     issues: list[str] = []
+    first_blocking: list[str] = []
+
+    def _report(status: str, blocking: list[str]) -> None:
+        if on_review:
+            try:
+                on_review({"status": status, "blocking": blocking})
+            except Exception:  # noqa: BLE001 — 回報失敗不能影響發片
+                pass
 
     for attempt in range(1, rounds + 1):
         path = _generate_once(item, idx, out_path, issues)
@@ -182,6 +192,7 @@ def safe_generate(item: dict, idx: int) -> str | None:
         logger.info("第 %d 則生圖成功(第 %d 輪):%s", idx, attempt, path)
 
         if not config.USE_IMAGE_REVIEW:
+            _report("pass", [])
             return path   # 沒開審圖 → 直接用
 
         # 🆕 UPDATE 5:審圖(分級:只有 blocking 才擋;minor 小瑕疵放行)
@@ -192,13 +203,18 @@ def safe_generate(item: dict, idx: int) -> str | None:
                 logger.info("第 %d 則審圖通過(有小瑕疵,放行):%s", idx, result["minor"])
             else:
                 logger.info("第 %d 則審圖通過 → 採用", idx)
+            # 第一輪就過 = pass;重生後才過 = rewrite(附當初擋下的理由)
+            _report("pass" if attempt == 1 else "rewrite", first_blocking)
             return path
 
         # ★重生時只餵 blocking(不拿美觀小事去干擾模型)★
         issues = result["blocking"]
+        if not first_blocking:
+            first_blocking = result["blocking"]
         logger.warning("第 %d 則審圖不通過(第 %d 輪),必擋問題:%s", idx, attempt, issues)
 
     logger.warning("第 %d 則:生圖/審圖最終未通過 → fallback 純字卡", idx)
+    _report("fallback", first_blocking)
     return None
 
 

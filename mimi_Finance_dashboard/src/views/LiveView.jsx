@@ -7,6 +7,7 @@ export default function LiveView() {
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState([]);   // [{name, sub, status}]
   const [logs, setLogs] = useState([]);        // [{level, text}]
+  const [reviews, setReviews] = useState([]);  // [{type, index, status, blocking, before, after}]
   const [done, setDone] = useState(null);
   const [err, setErr] = useState(null);
   const esRef = useRef(null);
@@ -27,7 +28,7 @@ export default function LiveView() {
   function start() {
     if (running) return;
     finishedRef.current = false;
-    setRunning(true); setStages([]); setLogs([]); setDone(null); setErr(null);
+    setRunning(true); setStages([]); setLogs([]); setReviews([]); setDone(null); setErr(null);
 
     const es = openRunStream((type, data) => {
       if (type === "stage") {
@@ -37,6 +38,8 @@ export default function LiveView() {
         ]);
       } else if (type === "log") {
         setLogs((prev) => [...prev, { level: data.level || "info", text: data.text }]);
+      } else if (type === "review") {
+        setReviews((prev) => [...prev, data]);
       } else if (type === "done") {
         finishedRef.current = true;
         setStages((prev) => prev.map((s) => ({ ...s, status: "done" })));
@@ -88,6 +91,35 @@ export default function LiveView() {
                 {s.sub ? <><br /><span className="sub">{s.sub}</span></> : null}
               </span>
               <span className="note mono">{s.status === "run" ? "…" : s.status === "done" ? "done" : ""}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="rv-head">🔍 審查流程(reflection:critic 抓問題 → writer 重寫 / 重生)</div>
+        <div className="reviews">
+          {reviews.length === 0 && (
+            <div className="note">跑到「審稿 / 審圖」時,這裡會顯示 critic 擋了什麼、改寫前後對照。</div>
+          )}
+          {reviews.map((r, i) => (
+            <div className={"rv " + (r.status === "pass" ? "pass" : "rewrite")} key={i}>
+              <div className="rv-top">
+                <span className="rv-tag s">{r.type === "script" ? "審稿" : "審圖"}</span>
+                第 {r.index} 則
+                {r.status === "pass"
+                  ? <span className="rv-tag pass">✓ 通過</span>
+                  : r.status === "fallback"
+                    ? <span className="rv-tag rewrite">⚠ 重寫上限,用最後版</span>
+                    : <span className="rv-tag rewrite">✏️ 重寫</span>}
+              </div>
+              {r.status !== "pass" && r.blocking && r.blocking.length > 0 && (
+                <div className="blk">🔴 擋下:{r.blocking.join("；")}</div>
+              )}
+              {r.status !== "pass" && r.before && r.after && (
+                <div className="ba">
+                  <div className="box"><span className="k">原稿</span>{r.before}</div>
+                  <div className="box after"><span className="k">改寫後</span>{r.after}</div>
+                </div>
+              )}
             </div>
           ))}
         </div>

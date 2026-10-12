@@ -72,6 +72,9 @@ def emit(kind: str, data: dict):
 ### 3-2. `main.py`:在既有步驟插 `emit`(薄薄幾行,不改邏輯)
 - 把 `_step(n, msg)` 內多呼叫一次 `emit("stage", {"n": n, "msg": msg, "status": "run"})`;步驟做完 emit `status:"done"`。
 - 關鍵節點 emit `log`(對齊現有 print 內容):候選數、選片結果、全文 `got/3`、審稿 `n_fixed/3`、生圖/審圖、上傳網址、DB run_id。
+- **審稿/審圖 emit `review`**(reflection 面板用):
+  - 審稿:main 改呼叫 `script_review.safe_review_and_fix_verbose()`(回 `{status, blocking, before, after}`),每則 emit 一筆 `review`。
+  - 審圖:`image_service.safe_generate(item, i, on_review=...)` 加 `on_review` 回呼,把每則審圖結果(pass/rewrite/fallback + blocking)emit 成 `review`。
 - **做法**:加一個模組級 `EMIT = None`(預設 None);API 跑片前設 `main.EMIT = events.emit`。`main.py` 內 `if EMIT: EMIT(...)`。CLI 直接跑時 `EMIT is None` → 完全照舊、零影響。
 - ★所有 emit 包在 `if EMIT:` + 本身 try/except,絕不讓事件機制弄垮發片。★
 
@@ -79,8 +82,13 @@ def emit(kind: str, data: dict):
 每個事件一筆:`event: <kind>\ndata: <json>\n\n`
 - `stage`:`{"n":4,"name":"審稿","status":"run"|"done","sub":"1/3 重寫"}`
 - `log`:`{"level":"info"|"warn"|"ok"|"err","text":"..."}`
+- `review`:審稿/審圖的 reflection 結果(給「審查流程」面板)
+  `{"type":"script"|"image","index":2,"status":"pass"|"rewrite"|"fallback","blocking":["..."],"before":"原稿","after":"改寫後"}`
+  (審圖沒有 before/after,只有 status + blocking)
 - `done`:`{"path":"output/final.mp4","seconds":58,"youtube":"...","run_id":38}`
 - `error`:`{"text":"..."}`
+
+> `routes_run` 的 SSE 迴圈轉發所有事件 kind,所以 `review` 不用特別處理;只有 `done`/`error` 會中止串流。
 
 ---
 

@@ -18,6 +18,10 @@ output_llm.json
 # 資料庫(UPDATE 6)
 mimi.db
 
+# MoviePy 合成時的暫存檔(根目錄殘留)
+*TEMP_MPY_*
+final.mp4
+
 # 個人面試簡報(私人,不進版控)+ Office 開啟時的暫存鎖檔
 *.pptx
 ~$*

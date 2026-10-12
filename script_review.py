@@ -214,6 +214,48 @@ def safe_review_and_fix(source: str, draft: str) -> str:
         return draft
 
 
+def _pass_result(draft: str) -> dict:
+    return {"script": draft, "changed": False, "status": "pass",
+            "blocking": [], "before": draft, "after": draft}
+
+
+def review_and_fix_verbose(source: str, draft: str) -> dict:
+    """🆕 UPDATE 15:同 review_and_fix,但回傳細節給控制台 UI。
+
+    回 {script, changed, status(pass/rewrite/fallback), blocking(當初擋下的理由), before, after}。
+    """
+    verdict = critic(source, draft)
+    if verdict["pass"]:
+        return _pass_result(draft)
+
+    first_blocking = verdict["blocking"]        # 當初擋下的理由(給 UI 顯示)
+    current = draft
+    for attempt in range(1, config.SCRIPT_REVIEW_MAX_RETRY + 1):
+        logger.warning("審稿不通過(第 %d 次重寫),必修:%s", attempt, verdict["blocking"])
+        current = writer(source, current, verdict["blocking"])
+        verdict = critic(source, current)
+        if verdict["pass"]:
+            logger.info("審稿第 %d 次重寫後通過", attempt)
+            return {"script": current, "changed": True, "status": "rewrite",
+                    "blocking": first_blocking, "before": draft, "after": current}
+
+    logger.warning("★審稿重寫 %d 次仍不過,用最後重寫版發片★ 殘留問題:%s",
+                   config.SCRIPT_REVIEW_MAX_RETRY, verdict["blocking"])
+    return {"script": current, "changed": True, "status": "fallback",
+            "blocking": first_blocking, "before": draft, "after": current}
+
+
+def safe_review_and_fix_verbose(source: str, draft: str) -> dict:
+    """★pipeline 用的 fail-open 入口(細節版)★:任何例外/空輸入 → 當作 pass 回原稿。"""
+    if not source or not draft:
+        return _pass_result(draft)
+    try:
+        return review_and_fix_verbose(source, draft)
+    except Exception as exc:  # noqa: BLE001 — 審稿是附屬,出錯一律回原稿
+        logger.warning("審稿流程出錯(fail-open 用原稿):%s", exc)
+        return _pass_result(draft)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 

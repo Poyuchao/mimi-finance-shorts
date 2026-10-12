@@ -107,6 +107,21 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono
 .term .info{color:#6ab0ff} .term .warn{color:#e3a94e} .term .ok{color:#4bc187} .term .err{color:#f2756d} .term .muted{color:#5b667d}
 .donebox{border:1px solid var(--ok);background:var(--down-bg);color:var(--ok);border-radius:10px;padding:10px 14px;font-size:13px}
 .errbox{border:1px solid var(--up);background:var(--up-bg);color:var(--up);border-radius:10px;padding:10px 14px;font-size:13px}
+/* 審查流程面板 */
+.rv-head{margin-top:20px;font-weight:600;font-size:13px;color:var(--ink-2)}
+.reviews{display:flex;flex-direction:column;gap:8px;margin-top:8px;min-height:28px}
+.rv{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
+.rv.pass{border-left:3px solid var(--ok)} .rv.rewrite{border-left:3px solid var(--warn)}
+.rv-top{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
+.rv-tag{font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:5px;letter-spacing:.03em}
+.rv-tag.s{color:var(--accent);background:var(--accent-bg)}
+.rv-tag.pass{color:var(--ok);background:var(--down-bg)} .rv-tag.rewrite{color:var(--warn);background:var(--warn-bg)}
+.rv .blk{font-size:12px;color:var(--warn)}
+.rv .ba{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px}
+@media(max-width:560px){.rv .ba{grid-template-columns:1fr}}
+.rv .ba .box{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:var(--surface-2)}
+.rv .ba .box.after{background:color-mix(in srgb,var(--down-bg) 50%,var(--surface))}
+.rv .ba .k{font-size:10.5px;color:var(--ink-3);display:block;margin-bottom:2px}
 
 /* audit chat */
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}

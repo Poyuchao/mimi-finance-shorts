@@ -53,6 +53,13 @@ def _log(text: str, level: str = "info") -> None:
     _emit("log", text=text, level=level)
 
 
+def _review(rtype: str, index: int, status: str, blocking=None,
+            before: str | None = None, after: str | None = None) -> None:
+    # 🆕 UPDATE 15:審稿/審圖結果給控制台「審查流程」面板
+    _emit("review", type=rtype, index=index, status=status,
+          blocking=blocking or [], before=before, after=after)
+
+
 def _step(n: int, msg: str) -> None:
     total = 6 if config.UPLOAD_ENABLED else 5
     print(f"\n{'─' * 60}\n[{n}/{total}] {msg}\n{'─' * 60}")
@@ -129,12 +136,15 @@ def run(platform: str = "ig") -> str:
             source = "\n".join(
                 x for x in (cand.get("title", ""), cand.get("clean_text") or "") if x
             ) or cand.get("title", "")
-            fixed = script_review.safe_review_and_fix(source, item["script"])
-            if fixed != item["script"]:
-                item["script"] = fixed
+            res = script_review.safe_review_and_fix_verbose(source, item["script"])
+            item["script"] = res["script"]
+            if res["changed"]:
                 n_fixed += 1
                 print(f"  ✏️ 第 {i} 則審稿不通過 → 已重寫")
                 _log(f"第 {i} 則審稿不通過 → 已重寫", "warn")
+            # 🆕 UPDATE 15:把審稿結果送給控制台「審查流程」面板
+            _review("script", i, res["status"], blocking=res["blocking"],
+                    before=res["before"], after=res["after"])
         print(f"  審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿")
         _log(f"審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿", "ok")
 
@@ -146,7 +156,11 @@ def run(platform: str = "ig") -> str:
     _stage("AI 生圖 + 審圖")
     if config.USE_AI_IMAGE:
         for i, item in enumerate(llm_result["items"], 1):
-            item["image_path"] = image_service.safe_generate(item, i)
+            # 🆕 UPDATE 15:on_review 把每則審圖結果送給控制台面板(i=i 綁當下的 i)
+            item["image_path"] = image_service.safe_generate(
+                item, i,
+                on_review=lambda r, i=i: _review("image", i, r["status"], blocking=r.get("blocking")),
+            )
         used = sum(1 for it in llm_result["items"] if it.get("image_path"))
         print(f"  生圖:{used}/{len(llm_result['items'])} 則成功(其餘用純字卡)")
         _log(f"生圖:{used}/{len(llm_result['items'])} 則成功(其餘純字卡)", "ok")

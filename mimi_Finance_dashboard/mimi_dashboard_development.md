@@ -46,8 +46,9 @@ mimi_Finance_dashboard/
     │   ├── LatestRun.jsx           # 最近一次 run 大卡(3 則新聞 + 影片 + 審稿摘要)
     │   ├── RunsTable.jsx           # 過往 runs 表
     │   ├── NewsItem.jsx            # 單則新聞卡(來源/理由/漲跌 chip)
-    │   ├── LiveRun.jsx             # 即時跑片:StageList + LogConsole
+    │   ├── LiveRun.jsx             # 即時跑片:StageList + 審查流程面板 + LogConsole
     │   ├── StageList.jsx           # stage 時間軸(pending/run/done)
+    │   ├── ReviewPanel.jsx         # 審查流程(審稿/審圖 reflection 卡片;接 review 事件)
     │   ├── LogConsole.jsx          # 深色終端機 log 區塊
     │   └── AuditChat.jsx           # 稽核對話框(chips + 輸入 + 工具呼叫串流)
     └── views/
@@ -63,10 +64,14 @@ mimi_Finance_dashboard/
 | 分頁 | 主要元件 | 後端呼叫 |
 |---|---|---|
 | **總覽** | `KpiRow` / `LatestRun` / `RunsTable` | `GET /stats`、`GET /runs`、`GET /runs/{id}` |
-| **即時跑片** | `LiveRun`(`StageList` + `LogConsole`) | `POST /run` → **SSE** 推 `stage` / `log` / `done` |
-| **稽核 Agent** | `AuditChat` | `POST /audit` → **SSE** 推 `tool` / `answer` / `report` |
+| **即時跑片** | `LiveRun`(`StageList` + **審查流程面板** + `LogConsole`) | `GET /run/stream` → **SSE** 推 `stage` / `log` / **`review`** / `done` |
+| **稽核 Agent** | `AuditChat` | `GET /audit/stream` → **SSE** 推 `tool` / `answer` |
 
 > 漲跌顏色:**台股慣例紅漲綠跌**(`up` 紅 / `down` 綠 / `flat` 灰),token 名用 `--up/--down/--flat`,別用西方習慣。
+
+**審查流程面板(reflection,放在 stage 時間軸與 log 之間):** 接 `review` SSE 事件,每則審稿/審圖一張卡:
+- `status=pass` → 綠「✓ 通過」;`rewrite` → 橘卡,顯示🔴擋下理由;審稿再附 **原稿 → 改寫後** 左右對照;`fallback` → 重寫到上限、用最後版。
+- 這是 demo 主角(critic 抓問題 → writer 重寫可視化),所以擺在 log **上方**;log 當輔助放最下。
 
 ---
 
@@ -81,8 +86,8 @@ export async function getRun(id)  { return (await fetch(`${BASE}/runs/${id}`)).j
 
 // SSE:回傳 EventSource,呼叫端自己掛 onmessage / addEventListener(事件型別見後端指引 §4)
 export function openRunStream(onEvent) {
-  const es = new EventSource(`${BASE}/run/stream`);   // 後端:POST 觸發 or GET 直接開流,擇一(見後端指引)
-  ["stage","log","done","error"].forEach(t =>
+  const es = new EventSource(`${BASE}/run/stream`);   // 後端:GET 直接開流(見後端指引)
+  ["stage","log","review","done","error"].forEach(t =>   // ★ review = 審稿/審圖 reflection
     es.addEventListener(t, e => onEvent(t, JSON.parse(e.data))));
   return es;   // 呼叫端記得在 done/error 或 unmount 時 es.close()
 }
