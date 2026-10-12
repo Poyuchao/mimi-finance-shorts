@@ -156,9 +156,9 @@ class LLMService(ABC):
 
 
 class OpenAIService(LLMService):
-    """OpenAI gpt-4o-mini 實作。"""
+    """OpenAI 實作(選片 + 改寫)。預設 gpt-4o(4o-mini 會把相近大數字讀錯/截斷)。"""
 
-    def __init__(self, model: str = "gpt-4o-mini"):
+    def __init__(self, model: str = "gpt-4o"):
         from openai import OpenAI
 
         api_key = os.getenv("OPENAI_API_KEY")
@@ -265,7 +265,7 @@ index 依你認為的重要性由高到低排列。"""
 def _build_rewrite_prompt(selected: list[dict]) -> str:
     lines = []
     for i, c in enumerate(selected, 1):
-        text = (c.get("clean_text") or "")[:400]
+        text = (c.get("clean_text") or "")[:1200]   # U14:有全文後放寬(原 400 為 RSS 摘要而設)
         lines.append(f"第 {i} 則(來源:{c['source']})\n    原標題:{c['title']}\n    內文:{text}")
     listing = "\n".join(lines)
     n = len(selected)

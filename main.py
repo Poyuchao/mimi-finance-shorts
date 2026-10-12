@@ -75,6 +75,14 @@ def run(platform: str = "ig") -> str:
     for rank, p in enumerate(picked, 1):
         print(f"  {rank}. [{p['source']}] {p['title']}  ← {p.get('reason','')}")
 
+    # 🆕 UPDATE 14:抓選中 3 則的全文(RSS 只給殘缺摘要 → 改寫/審稿會誤判數字編造)
+    # ★ 覆蓋 clean_text 一處,改寫與審稿同時吃到完整原文;抓不到 fallback 摘要,不中斷。★
+    if config.USE_FULLTEXT:
+        print(f"\n{'─' * 60}\n[+] 抓選中新聞全文(改寫/審稿用完整原文,抓不到退摘要)\n{'─' * 60}")
+        import article_fetch
+        got = article_fetch.enrich_fulltext(picked)
+        print(f"  全文:{got}/{len(picked)} 則取得,其餘用 RSS 摘要")
+
     _step(3, "LLM 第二步:改寫口播稿")
     llm_result = svc.rewrite_scripts(picked)
     print(f"  影片標題:{llm_result['video_title']}")
@@ -87,7 +95,11 @@ def run(platform: str = "ig") -> str:
         n_fixed = 0
         # picked(含原文 clean_text)與 items 順序對齊 → zip 配對
         for i, (cand, item) in enumerate(zip(picked, llm_result["items"]), 1):
-            source = cand.get("clean_text") or cand.get("title", "")
+            # ★ critic 要看到跟 rewrite 一樣的來源(標題 + 內文)——
+            #   否則標題裡的事實(如收盤點數)只在 title、critic 只拿 clean_text 時會誤判成「編造」。
+            source = "\n".join(
+                x for x in (cand.get("title", ""), cand.get("clean_text") or "") if x
+            ) or cand.get("title", "")
             fixed = script_review.safe_review_and_fix(source, item["script"])
             if fixed != item["script"]:
                 item["script"] = fixed
