@@ -10,8 +10,11 @@
 > → **U9 選片品質稽核 Agent**(function calling 決策迴圈)→ **U10 觀看數追蹤**(發布 → 觀測回饋)
 > → **U11 LangGraph 版 Agent**(同一 agent 用 orchestration 框架重做,拿到跨題記憶 + session recovery)
 > → **U12 口播稿審稿**(writer-critic reflection:擋稿偏離原文/投資建議,偏離就重寫)
-> → **U13 上下游對齊**(改寫 prompt 加數字鐵則/不給投資建議,從源頭少製造問題;審稿放行合理四捨五入)。
-> 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP`),可退回前一版行為。
+> → **U13 上下游對齊**(改寫 prompt 加數字鐵則/不給投資建議,從源頭少製造問題;審稿放行合理四捨五入)
+> → **U14 選中新聞抓全文**(trafilatura;RSS 只給殘缺摘要 → 改寫/審稿誤判,改抓完整原文)
+> → **U15 控制台**(FastAPI + React:總覽 / 即時跑片 SSE / 稽核 Agent 對話)
+> → **U16 TTS 容錯**(edge-tts 被微軟 403 → 本機 Yating(WinRT)/Hanhan(SAPI)備援 + 引擎切換)。
+> 每個階段都留一鍵開關(`USE_MIMI` / `USE_AI_IMAGE` / `USE_IMAGE_REVIEW` / `UPLOAD_ENABLED` / `USE_MCP` / `USE_FULLTEXT` / `TTS_ENGINE`),可退回前一版行為。
 
 ---
 
@@ -76,8 +79,9 @@
 |------|------|
 | 語言 | Python 3.11+(開發用 3.14) |
 | 抓 RSS | feedparser、requests、beautifulsoup4 |
-| LLM | openai(gpt-4o-mini) |
-| TTS | edge-tts(`zh-TW-HsiaoChenNeural`) |
+| LLM | openai(gpt-4o / gpt-4o-mini) |
+| 抓全文 | trafilatura(選中新聞的正文萃取,U14) |
+| TTS | edge-tts(線上,曉臻)+ 本機備援:WinRT OneCore(Yating)/ SAPI(Hanhan,`pywin32`)(U16) |
 | 字卡 | Jinja2 + Playwright(chromium) |
 | 影片 | MoviePy(CompositeVideoClip 疊層,底層 ffmpeg) |
 | 生圖 / 審圖 | google-genai(Gemini;`-image` 變體生圖、vision 模型審圖) |
@@ -85,6 +89,7 @@
 | 資料庫 | SQLAlchemy 2.0 + SQLite |
 | 工具協議 | `mcp`(Model Context Protocol,FastMCP + stdio) |
 | Agent 框架 | LangGraph（StateGraph + SqliteSaver checkpointer）+ langchain-mcp-adapters（U11) |
+| 控制台 | FastAPI + SSE(後端)/ React + Vite(前端)/ react-markdown(U15) |
 | 米米素材 | AI 圖生影片工具(如 DeeVid)手動預生成,直式 9:16 |
 
 ---
@@ -102,7 +107,9 @@
 ├── image_service.py     # ④c AI 生成新聞示意圖(Gemini;safe_generate 生圖+審圖防呆鏈)
 ├── review_service.py    # ④d AI 審圖 agent(Gemini vision;blocking/minor 分級)
 ├── script_review.py     # ④b+ 口播稿審稿(U12,writer-critic reflection;純 Python 迴圈)
-├── tts.py               # ⑤ TTS(新聞 script + 開場白/收尾旁白)
+├── article_fetch.py     # ④a+ 選中新聞抓全文(U14,trafilatura;抓不到退 RSS 摘要)
+├── tts.py               # ⑤ TTS(edge 線上 + 本機 Yating/Hanhan 備援;引擎可切,U16)
+├── tts_winrt.ps1        #   本機 OneCore 語音(Yating)WinRT 合成腳本(U16)
 ├── card_render.py       # ⑥ 字卡(封面/新聞卡兩版面/開場白·收尾泡泡卡)
 ├── video.py             # ⑦ 影片合成(6 片段;make_mimi_segment 疊層只用頭尾)
 ├── templates/
@@ -120,6 +127,13 @@
 ├── mcp_server/          # 🔌 MCP Server(把唯讀能力標準化暴露)
 │   └── finance_news_server.py  # FastMCP:fetch_finance_news / get_recent_selections
 │                        #          get_run_detail / get_video_stats + resource runs://latest
+├── api/                 # 🖥️ 控制台後端(U15,FastAPI 薄層,重用既有模組)
+│   ├── server.py        #   app + CORS + 掛路由
+│   ├── routes_runs.py   #   GET /stats /runs /runs/{id};POST /stats/refresh
+│   ├── routes_run.py    #   GET /run/stream(SSE 跑片進度 + log)
+│   ├── routes_audit.py  #   GET /audit/stream(稽核 agent astream 轉 SSE)
+│   └── events.py        #   事件匯流排(call_soon_threadsafe 跨執行緒安全)
+├── mimi_Finance_dashboard/  # 🖥️ 控制台前端(U15,React + Vite;總覽/即時跑片/稽核)
 ├── mcp_client.py        # 🔌 MCP Client(啟 server 子行程 + call_tool;可單獨跑測試)
 ├── agent.py             # 🤖 選片品質稽核 agent(U9,手刻 function calling 迴圈,純唯讀)
 ├── agent_langgraph.py   # 🤖 同一 agent 的 LangGraph 版(U11,StateGraph + checkpointer 跨題記憶)
@@ -443,6 +457,58 @@ python query_runs.py --list     # 看到多一欄「觀看」
 
 ---
 
+## 選中新聞抓全文（U14）
+
+RSS 的 `description` 只是一段 ~150 字摘要(甚至只有「《詳全文》」),**收盤等關鍵數字常只在標題** → 改寫/審稿只拿到半篇,會把「標題有、內文沒有」的數字誤判成編造。
+
+[`article_fetch.py`](article_fetch.py):選片後、改寫前,對**選中的 3 則**用 `link` 抓整篇、`trafilatura` 萃取正文,覆蓋 `clean_text`(改寫 + 審稿同時吃到完整原文)。
+
+- 只抓 3 則(不是 10 篇候選)、自帶 UA(風傳媒需要)、3000 字上限控 token。
+- **容錯**:抓失敗/逾時/正文太短 → 退回原 RSS 摘要;`USE_FULLTEXT=False` 完全等同前一版。
+
+> 💡 這題的教訓:之前以為是模型/prompt 問題,一路查下去才發現**根因是「原文」本身是殘缺摘要** —— 缺的是資料,不是提示詞。
+
+---
+
+## 控制台（U15,選用）
+
+一個對應發片流程的 Web 控制台:**React(Vite)前端 + FastAPI 後端**,後端是**薄層、重用既有模組**(`repository` / `main` / `agent_langgraph`),不重寫邏輯。
+
+```powershell
+# 後端(專案根)
+.\venv\Scripts\python.exe -m uvicorn api.server:app --port 8000 --reload
+# 前端(mimi_Finance_dashboard/)
+npm install ; npm run dev     # http://localhost:5173(/api 由 vite proxy 轉 :8000)
+```
+
+三個分頁:
+
+| 分頁 | 內容 | 後端 |
+|---|---|---|
+| **總覽** | KPI(已發布/累計觀看/執行次數)+ 最近一次 Run(選中 3 則+理由+影片)+ 過往 Runs 表 | `GET /api/stats` `/runs` `/runs/{id}`;`POST /api/stats/refresh`(撈觀看數) |
+| **即時跑片** | 按鈕觸發跑片,**SSE** 把 stage 進度 + log 逐行推到前端時間軸 + 終端機 | `GET /api/run/stream`(`main.run` 丟 `to_thread`,單支鎖)|
+| **稽核 Agent** | 自然語言問選片品質,**串流**顯示 agent 的工具呼叫 + 答案(markdown 渲染)| `GET /api/audit/stream`(轉 `agent_langgraph.astream`)|
+
+**設計重點:**
+- **pipeline 發事件**:`main.py` 加 `EMIT`(預設 None)+ `_stage`/`_log`,API 跑片前接上 `events.emit`;★CLI 直接跑 `EMIT=None` → 行為完全不變,emit 失敗絕不中斷發片★。
+- **跨執行緒安全**:`main.run()` 在 worker thread,事件用 `loop.call_soon_threadsafe` 送回 event loop([`api/events.py`](api/events.py))。
+- **已發布 vs 測試**:pipeline 一律上傳 private,**手動改 public 才算發布** → 用 YT `privacyStatus` 判斷(`refresh_stats` 撈觀看數時一併取回),而非用觀看數猜。
+- **前端**:切分頁用 `hidden`(不卸載)→ 跑片途中切 tab 不中斷 SSE;稽核答案用 react-markdown;輸入 textarea(Enter 送出 / Shift+Enter 換行)。
+
+---
+
+## TTS 容錯（U16)
+
+edge-tts 走的是微軟**非官方端點**,會不定期被限流/封鎖(持續 `403 WSServerHandshakeError`,且無新版可升)。[`tts.py`](tts.py) 做成**可切換引擎 + 本機離線備援**,發片不再被 403 卡死:
+
+- `TTS_ENGINE`:`auto`(edge 失敗自動切本機)/ `edge` / `local`。
+- **本機離線**(永不 403):主力 **Yating / Zhiwei**(OneCore 神經語音,經 [`tts_winrt.ps1`](tts_winrt.ps1) 叫 WinRT —— 因 `winsdk` 在 Python 3.14 編不起來,改用 PowerShell 子行程);最後備援 **Hanhan**(SAPI5,`win32com`)。
+- edge 端加了退避重試;本機產出 `.wav`,下游 MoviePy 照吃。
+
+> 💡 工程判斷:**不要把發片命脈綁在一個會被隨時掐斷的免費端點上** —— 加本機備援,有網路時音質好、被擋時本機頂上。
+
+---
+
 ## 設定(config.py)
 
 - `RSS_SOURCES` — 三來源網址與抓法(風傳媒需帶 UA)。
@@ -460,6 +526,8 @@ python query_runs.py --list     # 看到多一欄「觀看」
 - **觀看數(U10)**:`YT_TOKEN_READONLY`(讀觀看數的獨立 token 檔)。
 - **LangGraph Agent(U11)**:`AGENT_HISTORY_KEEP`(20,每輪丟給 LLM 的訊息數)、`AGENT_CHECKPOINT_DB`(對話狀態檔)、`AGENT_RECURSION_LIMIT`(12)。
 - **口播稿審稿(U12)**:`USE_SCRIPT_REVIEW`(True;False = 改寫後直接用)、`SCRIPT_REVIEW_MODEL`、`SCRIPT_REVIEW_MAX_RETRY`(1)。
+- **選中新聞抓全文(U14)**:`USE_FULLTEXT`(True)、`FULLTEXT_TIMEOUT`(15)、`FULLTEXT_MIN_CHARS`(200)、`FULLTEXT_MAX_CHARS`(3000)。
+- **TTS 引擎 / 本機備援(U16)**:`TTS_ENGINE`(`local`/`auto`/`edge`)、`TTS_LOCAL_BACKEND`(`winrt`/`sapi`)、`TTS_LOCAL_VOICE`(Yating)、`TTS_WINRT_RATE`(1.0)。
 
 ---
 
