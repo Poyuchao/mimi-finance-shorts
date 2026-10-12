@@ -43,6 +43,9 @@ class Run(Base):
     like_count = Column(Integer, nullable=True)
     comment_count = Column(Integer, nullable=True)
     stats_updated_at = Column(DateTime, nullable=True)   # 這批數字是何時撈的
+    # 🆕 UPDATE 15:YT 隱私狀態(public/unlisted/private)。pipeline 一律上傳 private,
+    #   手動改 public 才算「真的發布」→ 用這個判斷已發布/未發布,比觀看數可靠。
+    privacy_status = Column(String, nullable=True)
 
     candidates = relationship(
         "Candidate", back_populates="run", cascade="all, delete-orphan"

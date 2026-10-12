@@ -71,10 +71,10 @@ export default function DashboardView() {
 
 function KpiRow({ stats }) {
   const kpis = [
-    [fmt(stats.published), "已發布影片", `共 ${fmt(stats.runs)} 次執行`],
-    [fmt(stats.total_views), "累計觀看", `${fmt(stats.videos_with_stats)} 支有數據`],
-    [fmt(stats.avg_views), "平均每支觀看", "有觀看數的影片"],
-    [fmt(stats.runs), "總執行次數", "runs 表"],
+    [fmt(stats.published), "已發布影片", `共 ${fmt(stats.runs)} 次執行(其餘為測試)`],
+    [fmt(stats.total_views), "累計觀看", "YouTube Shorts"],
+    [fmt(stats.avg_views), "平均每支觀看", "已發布影片"],
+    [fmt(stats.runs), "總執行次數", "含測試重跑"],
   ];
   return (
     <div className="kpis">
@@ -100,7 +100,9 @@ function LatestRun({ detail }) {
       <div className="card-h">
         <span className="eyebrow">最近一次 Run</span>
         <h2>{detail.video_title || "(無標題)"}</h2>
-        {detail.status === "success" && <span className="pill ok">✅ {detail.status}</span>}
+        {detail.privacy_status === "public"
+          ? <span className="pill ok">✅ 已發布</span>
+          : <span className="pill muted">未發布(私人/測試)</span>}
         {detail.view_count != null && <span className="pill view">▶ {fmt(detail.view_count)} 觀看</span>}
         <div className="spacer" />
         <span className="mono note">run #{detail.run_id} · {detail.run_date}</span>
@@ -160,9 +162,9 @@ function RunsTable({ runs }) {
                 </td>
                 <td className="mono">{r.candidates} / {r.selected}</td>
                 <td className="num">{fmt(r.view_count)}</td>
-                <td>{r.status === "success"
+                <td>{r.privacy_status === "public"
                   ? <span className="pill ok">已發布</span>
-                  : <span className="note">{r.status}</span>}</td>
+                  : <span className="pill muted">未發布</span>}</td>
               </tr>
             ))}
           </tbody>

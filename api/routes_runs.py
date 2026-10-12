@@ -40,7 +40,7 @@ def fetch_runs(limit: int = 30) -> list[dict]:
         runs = session.execute(
             select(
                 Run.id, Run.run_date, Run.video_title, Run.status,
-                Run.youtube_url, Run.view_count,
+                Run.youtube_url, Run.view_count, Run.privacy_status,
             ).order_by(Run.run_date.desc(), Run.id.desc()).limit(limit)
         ).all()
         counts = _candidate_counts(session)
@@ -48,7 +48,7 @@ def fetch_runs(limit: int = 30) -> list[dict]:
         session.close()
 
     out = []
-    for rid, d, title, status, url, vc in runs:
+    for rid, d, title, status, url, vc, ps in runs:
         c = counts.get(rid, {"total": 0, "selected": 0})
         out.append({
             "run_id": rid,
@@ -57,6 +57,7 @@ def fetch_runs(limit: int = 30) -> list[dict]:
             "status": status,
             "youtube_url": url,
             "view_count": vc,
+            "privacy_status": ps,
             "candidates": c["total"],
             "selected": c["selected"],
         })
@@ -68,8 +69,10 @@ def fetch_stats() -> dict:
     session = get_session()
     try:
         total_runs = session.scalar(select(func.count(Run.id))) or 0
+        # ★「已發布」= YT 隱私狀態為 public(pipeline 一律上傳 private,手動改 public 才算發布)。
+        #   privacy_status 由 refresh_stats 撈回填入;還沒撈過的為 null(視為未發布)。
         published = session.scalar(
-            select(func.count(Run.id)).where(Run.youtube_url.isnot(None))
+            select(func.count(Run.id)).where(Run.privacy_status == "public")
         ) or 0
         views = session.execute(
             select(Run.view_count).where(Run.view_count.isnot(None))

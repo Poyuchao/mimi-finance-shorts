@@ -153,6 +153,7 @@ def update_run_stats(session: Session, run_id: int, stats: dict) -> bool:
     run.view_count = stats.get("view_count")
     run.like_count = stats.get("like_count")
     run.comment_count = stats.get("comment_count")
+    run.privacy_status = stats.get("privacy_status")   # 🆕 U15:public/unlisted/private
     run.stats_updated_at = datetime.now()   # ★記下「這批數字何時撈的」★
     session.commit()
     return True
@@ -194,6 +195,7 @@ def get_run_detail(session: Session, run_id: int) -> dict | None:
         "view_count": run.view_count,
         "like_count": run.like_count,
         "comment_count": run.comment_count,
+        "privacy_status": run.privacy_status,   # 🆕 U15
         "stats_updated_at": str(run.stats_updated_at) if run.stats_updated_at else None,
         "candidates": [
             {

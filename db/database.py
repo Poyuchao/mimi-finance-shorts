@@ -27,6 +27,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "like_count": "INTEGER",
         "comment_count": "INTEGER",
         "stats_updated_at": "DATETIME",
+        "privacy_status": "VARCHAR",   # 🆕 UPDATE 15:public/unlisted/private
     },
 }
 

@@ -170,12 +170,14 @@ def extract_video_id(url: str) -> str | None:
 
 
 def fetch_video_stats(youtube, video_id: str) -> dict:
-    """撈單支影片的統計:回 {view_count, like_count, comment_count}(缺的為 None)。
+    """撈單支影片的統計 + 隱私狀態:
+    回 {view_count, like_count, comment_count, privacy_status}(缺的為 None)。
 
     ★ 打 YouTube API(有副作用)→ 屬「寫入/維運」類,由 refresh_stats 直接呼叫,不上 MCP。★
-    影片不存在/私人 → 回 {}(由呼叫端決定怎麼處理,不 raise)。
+    影片不存在 → 回 {}(由呼叫端決定怎麼處理,不 raise)。
+    privacy_status:public / unlisted / private —— 用來判斷「有沒有真的發布」(UPDATE 15)。
     """
-    resp = youtube.videos().list(part="statistics", id=video_id).execute()
+    resp = youtube.videos().list(part="statistics,status", id=video_id).execute()
     items = resp.get("items", [])
     if not items:
         return {}
@@ -191,6 +193,7 @@ def fetch_video_stats(youtube, video_id: str) -> dict:
         "view_count": _int(st.get("viewCount")),
         "like_count": _int(st.get("likeCount")),
         "comment_count": _int(st.get("commentCount")),
+        "privacy_status": items[0].get("status", {}).get("privacyStatus"),
     }
 
 
