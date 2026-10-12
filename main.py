@@ -178,9 +178,10 @@ def run(platform: str = "ig") -> str:
     cards = card_render.render_program_cards(llm_result, platform=platform)
 
     _step(5, "影片合成(封面+開場白+3新聞+收尾)→ mp4")
-    # 🆕 UPDATE 15:把 MoviePy 寫檔進度(%)回報給控制台
+    # 🆕 UPDATE 15:API 跑片時把 MoviePy 寫檔進度(%)回報給控制台;
+    #   CLI(EMIT=None)傳 None → 保留 MoviePy 原本的終端機進度條。
     out = video.compose(cards, news_audio, opening_audio, closing_audio,
-                        on_progress=lambda pct: _emit("progress", pct=pct))
+                        on_progress=(lambda pct: _emit("progress", pct=pct)) if EMIT else None)
 
     # ⑧ UPDATE 3:自動上傳 YouTube(上傳失敗不影響已產出的 mp4)
     youtube_url = None

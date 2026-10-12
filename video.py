@@ -66,12 +66,13 @@ def _make_logger(on_progress):
 
     on_progress 失敗/None 一律不影響合成。只在百分比「變化」時回報(節流)。
     """
+    # 回 "bar" = MoviePy 預設(終端機進度條照常);回 _CB = 攔進度轉 on_progress
     if on_progress is None:
-        return None
+        return "bar"
     try:
         import proglog
-    except Exception:  # noqa: BLE001 — 沒有 proglog 就不報進度,不影響合成
-        return None
+    except Exception:  # noqa: BLE001 — 沒有 proglog 就退回預設終端機進度條
+        return "bar"
 
     class _CB(proglog.ProgressBarLogger):
         _last = -1
