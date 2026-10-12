@@ -73,12 +73,14 @@ def run(platform: str = "ig") -> str:
     # ①②③ 🆕 UPDATE 8:優先走 MCP 取得候選池;失敗則 fallback 回直接呼叫
     recent: list[dict] = []
     candidates = None
+    stats = None          # 🆕 UPDATE 15:漏斗數字(RSS 原始 → 股市 → 候選池),給控制台 demo
+    via = "mcp"
     if config.USE_MCP:
         _step(1, "透過 MCP 取得候選池 + 歷史選片")
         try:
-            candidates, recent = asyncio.run(
+            candidates, recent, stats = asyncio.run(
                 mcp_client.fetch_candidates_via_mcp(
-                    pool_size=config.NEWS_POOL, dedup_days=config.DEDUP_DAYS
+                    pool_size=config.NEWS_POOL, dedup_days=config.DEDUP_DAYS, with_stats=True
                 )
             )
             print(f"  MCP:候選 {len(candidates)} 則、近 {config.DEDUP_DAYS} 天已發 {len(recent)} 則")
@@ -96,7 +98,21 @@ def run(platform: str = "ig") -> str:
         if not stock_news:
             raise RuntimeError("篩不到任何股市新聞,終止(檢查關鍵字/來源)")
         candidates = select_news.select_news(stock_news)
+        via = "rss"
+        stats = select_news.funnel_stats(entries, stock_news, candidates)
         _log(f"RSS fallback:候選 {len(candidates)} 則")
+
+    # 🆕 UPDATE 15:候選池 + 漏斗 + 近 N 天已發 → 控制台(只送標題/來源/連結,payload 保持小)
+    _emit(
+        "pool",
+        via=via,
+        tools=([f"fetch_finance_news(pool_size={config.NEWS_POOL})",
+                f"get_recent_selections(days={config.DEDUP_DAYS})"] if via == "mcp" else []),
+        stats=stats,
+        candidates=[{"title": c.get("title"), "source": c.get("source"), "link": c.get("link")}
+                    for c in candidates],
+        recent=[{"run_date": r.get("run_date"), "title": r.get("title")} for r in recent],
+    )
 
     svc = OpenAIService()
 
@@ -106,6 +122,12 @@ def run(platform: str = "ig") -> str:
     for rank, p in enumerate(picked, 1):
         print(f"  {rank}. [{p['source']}] {p['title']}  ← {p.get('reason','')}")
         _log(f"{rank}. [{p['source']}] {p['title']}")
+    # 🆕 UPDATE 15:選中 3 則 + 理由 → 控制台(未選的由前端用候選池扣掉,LLM 不給未選理由)
+    _emit("pick", picked=[
+        {"rank": i, "title": p.get("title"), "source": p.get("source"),
+         "link": p.get("link"), "reason": p.get("reason", "")}
+        for i, p in enumerate(picked, 1)
+    ])
 
     # 🆕 UPDATE 14:抓選中 3 則的全文(RSS 只給殘缺摘要 → 改寫/審稿會誤判數字編造)
     # ★ 覆蓋 clean_text 一處,改寫與審稿同時吃到完整原文;抓不到 fallback 摘要,不中斷。★

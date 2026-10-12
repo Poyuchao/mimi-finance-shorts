@@ -41,6 +41,20 @@ def _is_duplicate(title: str, kept: list[str]) -> bool:
     return False
 
 
+def funnel_stats(entries: list[dict], stock: list[dict], candidates: list[dict]) -> dict:
+    """🆕 UPDATE 15:候選池漏斗數字(給控制台 demo 顯示「從多少取了 10 則」)。
+
+    RSS 原始 → 股市相關 → 候選池。去重不另給數字(前端只在箭頭下標「去重後」)。
+    MCP server 與 main.py 的 RSS fallback 共用,兩條路算法一致。
+    """
+    by_source: dict[str, int] = {}
+    for e in entries:
+        src = e.get("source") or "其他"
+        by_source[src] = by_source.get(src, 0) + 1
+    return {"raw": len(entries), "by_source": by_source,
+            "stock": len(stock), "pool": len(candidates)}
+
+
 def select_news(
     stock_news: list[dict],
     pool: int | None = None,

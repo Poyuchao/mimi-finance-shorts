@@ -3,6 +3,107 @@ import { openRunStream } from "../api.js";
 
 const LV = { info: "INFO", warn: "WARN", ok: " OK ", err: "ERR " };
 
+// ── 候選池 / 選片(漏斗),插在時間軸對應步驟底下 ──
+function Funnel({ cells }) {
+  // cells: [{n, label, hl?, dedupBefore?}];dedupBefore = 這格前面的箭頭下標「去重後」
+  return (
+    <div className="funnel">
+      {cells.map((c, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <span className="fn-arrow">→{c.dedupBefore && <small>去重後</small>}</span>
+          )}
+          <div className={"fn" + (c.hl ? " hl" : "")}><b>{c.n}</b><span>{c.label}</span></div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function bySourceText(bySource) {
+  return Object.entries(bySource || {}).map(([k, v]) => `${k} ${v}`).join(" · ");
+}
+
+function poolSummary(pool) {
+  const s = pool.stats;
+  return s ? `${s.raw} → ${s.stock} → ${s.pool}` : `候選 ${pool.candidates.length}`;
+}
+
+function PoolBlock({ pool }) {
+  const s = pool.stats;
+  return (
+    <div className="step-rev">
+      <div className="rv-chips">
+        {pool.via === "mcp" && pool.tools.length > 0
+          ? pool.tools.map((t) => <span className="tool-chip" key={t}>🔧 {t}</span>)
+          : <span className="tool-chip">RSS 直接抓取(MCP fallback)</span>}
+      </div>
+      {s && (
+        <Funnel cells={[
+          { n: s.raw, label: `RSS 原始(${bySourceText(s.by_source)})` },
+          { n: s.stock, label: "股市相關(關鍵字篩 + 排除中港股)" },
+          { n: s.pool, label: "候選池(依發布時間取前 N)", hl: true, dedupBefore: true },
+        ]} />
+      )}
+      <details className="xd">
+        <summary>候選池 {pool.candidates.length} 則</summary>
+        <ol className="cand-list">
+          {pool.candidates.map((c, i) => (
+            <li key={c.link || i}><span className="src">{c.source}</span>{c.title}</li>
+          ))}
+        </ol>
+      </details>
+      {pool.recent.length > 0 && (
+        <details className="xd">
+          <summary>近期已發 {pool.recent.length} 則(帶進選片 prompt,避免重複報導)</summary>
+          <ul className="cand-list">
+            {pool.recent.map((r, i) => (
+              <li key={i}><span className="mono">{(r.run_date || "").slice(5)}</span> {r.title}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function PickBlock({ pick, pool }) {
+  const pickedLinks = new Set(pick.picked.map((p) => p.link));
+  const unpicked = pool ? pool.candidates.filter((c) => !pickedLinks.has(c.link)) : [];
+  const s = pool && pool.stats;
+  return (
+    <div className="step-rev">
+      {s && (
+        <Funnel cells={[
+          { n: s.raw, label: "RSS 原始" },
+          { n: s.stock, label: "股市相關" },
+          { n: s.pool, label: "候選池", dedupBefore: true },
+          { n: pick.picked.length, label: "LLM 選中", hl: true },
+        ]} />
+      )}
+      {pick.picked.map((p) => (
+        <div className="pick" key={p.link || p.rank}>
+          <span className="rank">{p.rank}</span>
+          <div>
+            <div className="pt"><span className="src">{p.source}</span>{p.title}</div>
+            {p.reason && <div className="pr">選片理由:{p.reason}</div>}
+          </div>
+        </div>
+      ))}
+      {unpicked.length > 0 && (
+        <details className="xd">
+          <summary>未選 {unpicked.length} 則(LLM 只回傳選中的理由,未選的不另附理由)</summary>
+          <ul className="cand-list">
+            {unpicked.map((c, i) => (
+              <li className="dim" key={c.link || i}><span className="src">{c.source}</span>{c.title}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // ── 審查結果(審稿/審圖 reflection),插在時間軸對應步驟底下 ──
 function revSummary(list) {
   const img = list[0].type === "image";
@@ -72,6 +173,16 @@ export default function LiveView() {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
   }, [logs]);
 
+  // pipeline 依序執行 → 候選池/選片/審查結果一定在對應步驟跑的當下送來,掛到「正在跑」的那一步
+  function attachToRunning(update) {
+    setStages((prev) => {
+      let idx = prev.findIndex((s) => s.status === "run");
+      if (idx === -1) idx = prev.length - 1;
+      if (idx === -1) return prev;
+      return prev.map((s, i) => (i === idx ? update(s) : s));
+    });
+  }
+
   function stop() {
     if (esRef.current) { esRef.current.close(); esRef.current = null; }
     setRunning(false);
@@ -90,16 +201,12 @@ export default function LiveView() {
         ]);
       } else if (type === "log") {
         setLogs((prev) => [...prev, { level: data.level || "info", text: data.text }]);
+      } else if (type === "pool") {
+        attachToRunning((s) => ({ ...s, pool: data }));
+      } else if (type === "pick") {
+        attachToRunning((s) => ({ ...s, pick: data }));
       } else if (type === "review") {
-        // pipeline 依序執行 → 審查結果一定在對應步驟跑的當下送來,掛到「正在跑」的那一步
-        setStages((prev) => {
-          let idx = prev.findIndex((s) => s.status === "run");
-          if (idx === -1) idx = prev.length - 1;
-          if (idx === -1) return prev;
-          return prev.map((s, i) =>
-            i === idx ? { ...s, reviews: [...(s.reviews || []), data] } : s
-          );
-        });
+        attachToRunning((s) => ({ ...s, reviews: [...(s.reviews || []), data] }));
       } else if (type === "progress") {
         // 合成進度:更新進行中那步(影片合成)的副標為「合成中 X%」
         setStages((prev) =>
@@ -123,6 +230,9 @@ export default function LiveView() {
     };
     esRef.current = es;
   }
+
+  // 選片那步要用候選池算「未選」→ 從掛著 pool 的那一步取出
+  const poolData = (stages.find((s) => s.pool) || {}).pool;
 
   return (
     <div className="view">
@@ -158,8 +268,14 @@ export default function LiveView() {
                 </span>
                 {s.reviews && s.reviews.length > 0
                   ? <span className="rv-sum">{revSummary(s.reviews)}</span>
-                  : <span className="note mono">{s.status === "run" ? "…" : s.status === "done" ? "done" : ""}</span>}
+                  : s.pick
+                    ? <span className="rv-sum">{(poolData ? poolData.candidates.length : "?")} → {s.pick.picked.length}</span>
+                    : s.pool
+                      ? <span className="rv-sum">{poolSummary(s.pool)}</span>
+                      : <span className="note mono">{s.status === "run" ? "…" : s.status === "done" ? "done" : ""}</span>}
               </div>
+              {s.pool && <PoolBlock pool={s.pool} />}
+              {s.pick && <PickBlock pick={s.pick} pool={poolData} />}
               {s.reviews && s.reviews.length > 0 && <RevBlock list={s.reviews} />}
             </Fragment>
           ))}

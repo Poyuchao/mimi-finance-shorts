@@ -71,9 +71,11 @@ def _restore_datetimes(candidates: list[dict]) -> list[dict]:
 async def fetch_candidates_via_mcp(
     pool_size: int | None = None,
     dedup_days: int | None = None,
-) -> tuple[list[dict], list[dict]]:
+    with_stats: bool = False,
+):
     """透過 MCP 取得 (候選新聞, 最近已發過的新聞)。
 
+    with_stats=True(🆕 UPDATE 15,控制台漏斗用)→ 回 (候選, 最近已發, 漏斗數字 dict | None)。
     失敗會 raise —— 由呼叫端(main.py)fallback 回直接呼叫。
     """
     pool_size = pool_size if pool_size is not None else config.NEWS_POOL
@@ -86,14 +88,23 @@ async def fetch_candidates_via_mcp(
             tools = await session.list_tools()
             logger.info("MCP 可用工具:%s", [t.name for t in tools.tools])
 
-            res = await session.call_tool("fetch_finance_news", {"pool_size": pool_size})
-            candidates = _restore_datetimes(_parse(res) or [])
+            args = {"pool_size": pool_size}
+            if with_stats:
+                args["with_stats"] = True
+            res = _parse(await session.call_tool("fetch_finance_news", args))
+            stats = None
+            if isinstance(res, dict) and "candidates" in res:   # with_stats 版回傳
+                stats = res.get("stats")
+                res = res.get("candidates")
+            candidates = _restore_datetimes(res or [])
 
             rec = await session.call_tool("get_recent_selections", {"days": dedup_days})
             recent = _parse(rec) or []
 
     logger.info("MCP 取得:候選 %d 則、近 %d 天已發 %d 則",
                 len(candidates), dedup_days, len(recent))
+    if with_stats:
+        return candidates, recent, stats
     return candidates, recent
 
 

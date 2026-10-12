@@ -72,6 +72,13 @@ def emit(kind: str, data: dict):
 ### 3-2. `main.py`:在既有步驟插 `emit`(薄薄幾行,不改邏輯)
 - 把 `_step(n, msg)` 內多呼叫一次 `emit("stage", {"n": n, "msg": msg, "status": "run"})`;步驟做完 emit `status:"done"`。
 - 關鍵節點 emit `log`(對齊現有 print 內容):候選數、選片結果、全文 `got/3`、審稿 `n_fixed/3`、生圖/審圖、上傳網址、DB run_id。
+- **候選池 / 選片 emit `pool`、`pick`**(demo 展示漏斗用):
+  - 候選池拿到後發 `pool`:走 MCP 時,`fetch_finance_news` 加選用參數 `with_stats=True`,
+    多回傳各階段數字(RSS 原始 / 各來源 / 股市相關 / 候選池);**預設 `False` 行為不變**,稽核 agent 不受影響。
+    MCP 失敗改走 RSS 直接抓時,main.py 本來就有 entries / stock_news / candidates,直接算。
+    兩條路共用 `select_news.funnel_stats(entries, stock, candidates)`。
+  - LLM 選片完發 `pick`:選中 3 則 + 名次 + 理由。未選的由前端用候選池扣掉選中的算出來(LLM 不會給未選理由,**不編造**)。
+  - 「去重」不給數字,前端只在漏斗箭頭下方標小字「去重後」。
 - **審稿/審圖 emit `review`**(reflection 面板用):
   - 審稿:main 改呼叫 `script_review.safe_review_and_fix_verbose()`(回 `{status, blocking, before, after}`),每則 emit 一筆 `review`。
   - 審圖:`image_service.safe_generate(item, i, on_review=...)` 加 `on_review` 回呼,把每則審圖結果(pass/rewrite/fallback + blocking)emit 成 `review`。
@@ -82,6 +89,16 @@ def emit(kind: str, data: dict):
 每個事件一筆:`event: <kind>\ndata: <json>\n\n`
 - `stage`:`{"n":4,"name":"審稿","status":"run"|"done","sub":"1/3 重寫"}`
 - `log`:`{"level":"info"|"warn"|"ok"|"err","text":"..."}`
+- `pool`:候選池 + 漏斗數字 + 近 N 天已發
+  ```json
+  {"via":"mcp"|"rss",
+   "tools":["fetch_finance_news(pool_size=10)","get_recent_selections(days=7)"],
+   "stats":{"raw":129,"by_source":{"ETtoday":50,"自由時報":40,"風傳媒":39},"stock":71,"pool":10},
+   "candidates":[{"title":"...","source":"自由時報","link":"..."}],
+   "recent":[{"run_date":"2026-10-07","title":"..."}]}
+  ```
+  (`via:"rss"` = MCP 失敗、改走直接抓取;`tools` 為空,前端顯示「RSS 直接抓取(MCP fallback)」)
+- `pick`:LLM 選片結果 `{"picked":[{"rank":1,"title":"...","source":"...","link":"...","reason":"..."}]}`
 - `review`:審稿/審圖的 reflection 結果(給「審查流程」面板)
   `{"type":"script"|"image","index":2,"status":"pass"|"rewrite"|"fallback","blocking":["..."],"before":"原稿","after":"改寫後"}`
   (審圖沒有 before/after,只有 status + blocking)

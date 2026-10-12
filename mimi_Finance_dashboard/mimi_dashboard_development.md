@@ -49,6 +49,9 @@ mimi_Finance_dashboard/
     │   ├── LiveRun.jsx             # 即時跑片:StageList(含審查結果)+ LogConsole
     │   ├── StageList.jsx           # stage 時間軸(pending/run/done),審稿/審圖結果插在對應步驟底下
     │   ├── RevBlock.jsx            # 單一步驟底下的審查結果(通過小標籤 + 重寫/退回卡片)
+    │   ├── PoolBlock.jsx           # 候選池那步:MCP 工具標籤 + 漏斗 + 候選/近期清單
+    │   ├── PickBlock.jsx           # 選片那步:漏斗 + 選中 3 則與理由 + 未選清單
+    │   ├── Funnel.jsx              # 漏斗(數字格 + 箭頭,去重只在箭頭下標小字)
     │   ├── LogConsole.jsx          # 深色終端機 log 區塊
     │   └── AuditChat.jsx           # 稽核對話框(chips + 輸入 + 工具呼叫串流)
     └── views/
@@ -64,10 +67,18 @@ mimi_Finance_dashboard/
 | 分頁 | 主要元件 | 後端呼叫 |
 |---|---|---|
 | **總覽** | `KpiRow` / `LatestRun` / `RunsTable` | `GET /stats`、`GET /runs`、`GET /runs/{id}` |
-| **即時跑片** | `LiveRun`(`StageList` + **審查流程面板** + `LogConsole`) | `GET /run/stream` → **SSE** 推 `stage` / `log` / **`review`** / `done` |
+| **即時跑片** | `LiveRun`(`StageList`,步驟底下插候選池/選片/審查結果 + `LogConsole`) | `GET /run/stream` → **SSE** 推 `stage` / `log` / `pool` / `pick` / `review` / `progress` / `done` |
 | **稽核 Agent** | `AuditChat` | `GET /audit/stream` → **SSE** 推 `tool` / `answer` |
 
 > 漲跌顏色:**台股慣例紅漲綠跌**(`up` 紅 / `down` 綠 / `flat` 灰),token 名用 `--up/--down/--flat`,別用西方習慣。
+
+**候選池 / 選片(直接插在時間軸對應步驟底下):** 接 `pool`、`pick` SSE 事件,一樣掛到「當下正在跑」的那一步。
+- **候選池那步**:先列出打了哪些 MCP 工具(`🔧 fetch_finance_news(pool_size=10)`、`🔧 get_recent_selections(days=7)`;走 RSS fallback 時改顯示「RSS 直接抓取(MCP fallback)」),再一條漏斗:
+  `129 RSS 原始(各來源數) → 71 股市相關 →(箭頭下小字「去重後」)→ 10 候選池`;右側摘要 `129 → 71 → 10`。
+  底下兩個可展開清單:候選池 N 則(來源 + 標題)、近 N 天已發(帶進選片 prompt 避免重複報導)。
+- **選片那步**:漏斗接到最後一格 `3 LLM 選中`;選中 3 則展開成卡片(名次 + 來源 + 標題 + 選片理由);
+  未選的收在可展開清單、灰色、**不附理由**(LLM 只回選中理由,不編造)。右側摘要 `10 → 3`。
+- 清單預設收起,避免時間軸太長。
 
 **審查結果(reflection,直接插在時間軸對應步驟底下):** 接 `review` SSE 事件。pipeline 依序執行,所以收到結果時掛到「當下正在跑」的那一步(審稿 → 「審稿 critic」、審圖 → 「AI 生圖 + 審圖」),後端不用標步驟。
 - 步驟列右側顯示摘要(例:`3/3 通過`、`1 重生 · 1 退字卡 · 1 通過`)。
@@ -89,8 +100,8 @@ export async function getRun(id)  { return (await fetch(`${BASE}/runs/${id}`)).j
 // SSE:回傳 EventSource,呼叫端自己掛 onmessage / addEventListener(事件型別見後端指引 §4)
 export function openRunStream(onEvent) {
   const es = new EventSource(`${BASE}/run/stream`);   // 後端:GET 直接開流(見後端指引)
-  // review = 審稿/審圖 reflection;progress = 影片合成 %
-  ["stage","log","review","progress","done","error"].forEach(t =>
+  // pool/pick = 候選池與選片;review = 審稿/審圖 reflection;progress = 影片合成 %
+  ["stage","log","pool","pick","review","progress","done","error"].forEach(t =>
     es.addEventListener(t, e => onEvent(t, JSON.parse(e.data))));
   return es;   // 呼叫端記得在 done/error 或 unmount 時 es.close()
 }

@@ -50,7 +50,7 @@ def _jsonable(candidates: list[dict]) -> list[dict]:
 
 
 @app.tool()
-def fetch_finance_news(pool_size: int = 10) -> list[dict[str, Any]]:
+def fetch_finance_news(pool_size: int = 10, with_stats: bool = False) -> list[dict[str, Any]] | dict[str, Any]:
     """【即時候選】抓取三來源財經 RSS,篩出股市新聞,收斂成「今天還可以選的候選池」。
 
     ⚠️ 這是「候選」,不是「選中/已發布」:
@@ -63,10 +63,12 @@ def fetch_finance_news(pool_size: int = 10) -> list[dict[str, Any]]:
 
     Args:
         pool_size: 候選池要幾則(預設 10)
+        with_stats: 發片 pipeline 內部用(控制台顯示漏斗)。一般查詢請維持預設 False。
 
     Returns:
-        候選新聞列表,每則含 title / source / link / published / clean_text
+        預設:候選新聞列表,每則含 title / source / link / published / clean_text
         (★注意:無 selected、無 select_reason —— 因為根本還沒選★)
+        with_stats=True:{"candidates": [...同上...], "stats": {raw, by_source, stock, pool}}
     """
     import fetch_rss
     import parse_filter
@@ -76,6 +78,9 @@ def fetch_finance_news(pool_size: int = 10) -> list[dict[str, Any]]:
     stock = parse_filter.parse_filter(entries)
     candidates = select_news.select_news(stock, pool=pool_size)
     logger.info("fetch_finance_news → %d 則候選", len(candidates))
+    if with_stats:
+        return {"candidates": _jsonable(candidates),
+                "stats": select_news.funnel_stats(entries, stock, candidates)}
     return _jsonable(candidates)
 
 
