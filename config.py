@@ -57,6 +57,11 @@ EXCLUDE_KEYWORDS = [
 NEWS_COUNT = 3               # 一支影片最終幾則(LLM 從候選中挑這麼多)
 NEWS_POOL = 10               # select_news 收斂出的候選則數(丟給 LLM 挑選)
 TTS_VOICE = "zh-TW-HsiaoChenNeural"
+# 🆕 UPDATE 16:TTS 引擎 + 本機離線備援(edge-tts 被微軟持續 403 時頂上,發片不中斷)
+TTS_ENGINE        = "local"   # "local"=只用本機 Yating(edge 被微軟 403 擋,固定本機最省事)/ "auto"=edge 失敗才切本機 / "edge"=只用 edge
+TTS_LOCAL_BACKEND = "winrt"   # winrt=OneCore(Yating/Zhiwei,音質好,經 PowerShell);sapi=Hanhan(win32com,最後備援)
+TTS_LOCAL_VOICE   = "Yating"  # WinRT 語音 DisplayName 關鍵字(可改 Zhiwei / Hanhan)
+TTS_WINRT_RATE    = 1.0       # WinRT 語速(0.5–6.0,1.0 正常;貼近原本 edge-tts 預設節奏)
 
 VIDEO = {
     "width": 1080, "height": 1920, "fps": 30,

@@ -21,3 +21,4 @@ langgraph-checkpoint-sqlite # checkpointer:跨題記憶 + session recovery(UPDAT
 trafilatura                 # 抓選中新聞全文的正文萃取(UPDATE 14)
 fastapi                     # 控制台後端 API(UPDATE 15)
 uvicorn[standard]           # ASGI server,跑 FastAPI(UPDATE 15)
+pywin32 ; sys_platform == "win32"   # 本機離線 TTS 備援(Windows SAPI SpVoice,UPDATE 16)
