@@ -1,5 +1,6 @@
 import { useState } from "react";
 import DashboardView from "./views/DashboardView.jsx";
+import LiveView from "./views/LiveView.jsx";
 
 const TABS = [
   ["dash", "總覽"],
@@ -33,9 +34,7 @@ export default function App() {
 
       <div className="wrap">
         {tab === "dash" && <DashboardView />}
-        {tab === "live" && (
-          <div className="placeholder">即時跑片 — 待 chunk 2(/run SSE)接上後實作。</div>
-        )}
+        {tab === "live" && <LiveView />}
         {tab === "audit" && (
           <div className="placeholder">稽核 Agent — 待 chunk 3(/audit SSE)接上後實作。</div>
         )}

@@ -31,10 +31,32 @@ from llm_service import OpenAIService
 
 logger = logging.getLogger("main")
 
+# 🆕 UPDATE 15:事件發送(給控制台即時跑片 SSE 用)。
+# API 跑片前把 EMIT 設成 api.events.emit;CLI 直接跑時 EMIT 為 None → ★行為完全不變★。
+# ★ 事件機制絕不影響發片:EMIT=None 不做事,_emit 本身也包 try/except。★
+EMIT = None
+
+
+def _emit(kind: str, **data) -> None:
+    if EMIT:
+        try:
+            EMIT(kind, data)
+        except Exception:  # noqa: BLE001 — 發事件失敗不能拖垮發片
+            pass
+
+
+def _stage(name: str, sub: str = "") -> None:
+    _emit("stage", name=name, sub=sub)
+
+
+def _log(text: str, level: str = "info") -> None:
+    _emit("log", text=text, level=level)
+
 
 def _step(n: int, msg: str) -> None:
     total = 6 if config.UPLOAD_ENABLED else 5
     print(f"\n{'─' * 60}\n[{n}/{total}] {msg}\n{'─' * 60}")
+    _stage(msg)
 
 
 def run(platform: str = "ig") -> str:
@@ -53,6 +75,7 @@ def run(platform: str = "ig") -> str:
                 )
             )
             print(f"  MCP:候選 {len(candidates)} 則、近 {config.DEDUP_DAYS} 天已發 {len(recent)} 則")
+            _log(f"MCP:候選 {len(candidates)} 則、近 {config.DEDUP_DAYS} 天已發 {len(recent)} 則")
         except Exception as exc:  # noqa: BLE001 — MCP 掛掉不能讓發片停擺
             logger.warning("MCP 取得失敗,fallback 直接呼叫:%s", exc)
             candidates = None
@@ -66,6 +89,7 @@ def run(platform: str = "ig") -> str:
         if not stock_news:
             raise RuntimeError("篩不到任何股市新聞,終止(檢查關鍵字/來源)")
         candidates = select_news.select_news(stock_news)
+        _log(f"RSS fallback:候選 {len(candidates)} 則")
 
     svc = OpenAIService()
 
@@ -74,23 +98,28 @@ def run(platform: str = "ig") -> str:
     picked = svc.select_top_news(candidates, recent=recent)
     for rank, p in enumerate(picked, 1):
         print(f"  {rank}. [{p['source']}] {p['title']}  ← {p.get('reason','')}")
+        _log(f"{rank}. [{p['source']}] {p['title']}")
 
     # 🆕 UPDATE 14:抓選中 3 則的全文(RSS 只給殘缺摘要 → 改寫/審稿會誤判數字編造)
     # ★ 覆蓋 clean_text 一處,改寫與審稿同時吃到完整原文;抓不到 fallback 摘要,不中斷。★
     if config.USE_FULLTEXT:
         print(f"\n{'─' * 60}\n[+] 抓選中新聞全文(改寫/審稿用完整原文,抓不到退摘要)\n{'─' * 60}")
+        _stage("抓選中新聞全文")
         import article_fetch
         got = article_fetch.enrich_fulltext(picked)
         print(f"  全文:{got}/{len(picked)} 則取得,其餘用 RSS 摘要")
+        _log(f"全文:{got}/{len(picked)} 則取得,其餘用 RSS 摘要", "ok")
 
     _step(3, "LLM 第二步:改寫口播稿")
     llm_result = svc.rewrite_scripts(picked)
     print(f"  影片標題:{llm_result['video_title']}")
+    _log(f"影片標題:{llm_result['video_title']}")
 
     # 🆕 UPDATE 12:審稿(改寫後、存檔前)——稿是否忠於原文?偏離/投資建議就重寫。
     # ★ fail-open:審稿出錯/不過到底 → 用原稿,絕不中斷發片。USE_SCRIPT_REVIEW=False 則完全跳過。★
     if config.USE_SCRIPT_REVIEW:
         print(f"\n{'─' * 60}\n[+] 審稿:檢查口播稿是否忠於原文(偏離/投資建議就重寫)\n{'─' * 60}")
+        _stage("審稿 critic")
         import script_review
         n_fixed = 0
         # picked(含原文 clean_text)與 items 順序對齊 → zip 配對
@@ -105,18 +134,22 @@ def run(platform: str = "ig") -> str:
                 item["script"] = fixed
                 n_fixed += 1
                 print(f"  ✏️ 第 {i} 則審稿不通過 → 已重寫")
+                _log(f"第 {i} 則審稿不通過 → 已重寫", "warn")
         print(f"  審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿")
+        _log(f"審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿", "ok")
 
     with open("output_llm.json", "w", encoding="utf-8") as f:
         json.dump(llm_result, f, ensure_ascii=False, indent=2)
 
     # 🆕 UPDATE 4:每則生 AI 示意圖(rewrite 後、字卡前;失敗回 None 不中斷)
     print(f"\n{'─' * 60}\n[+] 生成新聞示意圖(每則;失敗即 fallback 純字卡)\n{'─' * 60}")
+    _stage("AI 生圖 + 審圖")
     if config.USE_AI_IMAGE:
         for i, item in enumerate(llm_result["items"], 1):
             item["image_path"] = image_service.safe_generate(item, i)
         used = sum(1 for it in llm_result["items"] if it.get("image_path"))
         print(f"  生圖:{used}/{len(llm_result['items'])} 則成功(其餘用純字卡)")
+        _log(f"生圖:{used}/{len(llm_result['items'])} 則成功(其餘純字卡)", "ok")
     else:
         for item in llm_result["items"]:
             item["image_path"] = None
@@ -145,6 +178,7 @@ def run(platform: str = "ig") -> str:
             video_id = youtube.upload_video(yt, out, meta)
             youtube_url = f"https://youtu.be/{video_id}"
             print(f"  ✅ 已上傳:{youtube_url}（{config.YT_PRIVACY}）")
+            _log(f"已上傳:{youtube_url}（{config.YT_PRIVACY}）", "ok")
             print("  ⚠️ 提醒:記得到 YT 後台(內容→編輯)勾選『變造/AI 合成內容』標註")
         except Exception as exc:  # noqa: BLE001 — 上傳失敗不能弄丟已產出的 mp4
             logger.exception("上傳失敗(mp4 已保留,可手動上傳):%s", exc)
@@ -153,6 +187,7 @@ def run(platform: str = "ig") -> str:
 
     # ⑨ UPDATE 6:寫入 DB(候選池 + 選片結果)
     # ★ 記錄是附屬功能:寫失敗只 log,絕不中斷發片 ★
+    run_id = None   # 先給預設,讓最後的 done 事件就算 DB 失敗也不會 NameError
     try:
         # picked 已是完整候選 dict(含 link/reason)→ 不需 index 對映
         selected_links = {p["link"] for p in picked}
@@ -173,6 +208,7 @@ def run(platform: str = "ig") -> str:
             )
             print(f"\n  📝 已記錄到 DB(run_id={run_id}:候選 {len(candidates)} 篇,"
                   f"選中 {len(selected_links)} 篇)")
+            _log(f"已記錄到 DB(run_id={run_id}:候選 {len(candidates)}、選中 {len(selected_links)})", "ok")
         finally:
             session.close()
     except Exception as exc:  # noqa: BLE001 — 寫 DB 失敗不能拖垮發片
@@ -189,6 +225,7 @@ def run(platform: str = "ig") -> str:
     print(f"\n{'=' * 60}")
     print(f"✅ 完成:{out}(全程 {dt:.0f} 秒)")
     print(f"{'=' * 60}")
+    _emit("done", path=out, seconds=int(dt), youtube=youtube_url, run_id=run_id)
     return out
 
 

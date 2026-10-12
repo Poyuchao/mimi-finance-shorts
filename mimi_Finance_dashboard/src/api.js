@@ -18,4 +18,13 @@ export const getRuns = (limit = 30) => j(`${BASE}/runs?limit=${limit}`);
 export const getRun = (id) => j(`${BASE}/runs/${id}`);
 export const refreshViews = () => post(`${BASE}/stats/refresh`); // 撈 YouTube 最新觀看數
 
-// 之後 chunk 2/3 會加:openRunStream / openAuditStream(EventSource SSE)
+// 即時跑片 SSE:回傳 EventSource,呼叫端收到 done/error 後務必 es.close()
+export function openRunStream(onEvent) {
+  const es = new EventSource(`${BASE}/run/stream`);
+  ["stage", "log", "done", "error"].forEach((t) =>
+    es.addEventListener(t, (e) => onEvent(t, JSON.parse(e.data)))
+  );
+  return es;
+}
+
+// chunk 3 會加:openAuditStream
