@@ -105,20 +105,30 @@ function PickBlock({ pick, pool }) {
 }
 
 // ── 審查結果(審稿/審圖 reflection),插在時間軸對應步驟底下 ──
+// 審稿的 overturned = 被二審推翻的一審指控(附原文引文)
+const hasOv = (r) => Array.isArray(r.overturned) && r.overturned.length > 0;
+// 一審擋下、二審全部推翻 → 放行(紫卡)
+const isVerified = (r) => r.status === "pass" && hasOv(r);
+
 function revSummary(list) {
   const img = list[0].type === "image";
-  let ps = 0, rw = 0, fb = 0;
-  list.forEach((x) => { if (x.status === "pass") ps++; else if (x.status === "rewrite") rw++; else fb++; });
-  if (!rw && !fb) return `${ps}/${list.length} 通過`;
+  let ps = 0, rw = 0, fb = 0, ov = 0;
+  list.forEach((x) => {
+    if (x.status === "pass") ps++; else if (x.status === "rewrite") rw++; else fb++;
+    if (hasOv(x)) ov++;
+  });
+  const ovText = ov ? `(${ov} 則二審推翻)` : "";
+  if (!rw && !fb) return `${ps}/${list.length} 通過${ovText}`;
   const parts = [];
   if (rw) parts.push(`${rw}${img ? " 重生" : " 重寫"}`);
   if (fb) parts.push(`${fb}${img ? " 退字卡" : " 用最後版"}`);
   if (ps) parts.push(`${ps} 通過`);
-  return parts.join(" · ");
+  return parts.join(" · ") + ovText;
 }
 
 function revTag(r) {
   const img = r.type === "image";
+  if (isVerified(r)) return "⚖ 二審推翻,放行";
   if (r.status === "rewrite") return img ? "✏️ 重生後通過" : "✏️ 重寫後通過";
   // fallback:審圖 = 兩輪沒過、那則不放圖改純字卡;審稿 = 重寫到上限、用最後重寫版
   return img ? "⚠ 未通過,退回純字卡" : "⚠ 重寫上限,用最後重寫版";
@@ -126,8 +136,8 @@ function revTag(r) {
 
 function RevBlock({ list }) {
   const label = list[0].type === "image" ? "審圖" : "審稿";
-  const pass = list.filter((r) => r.status === "pass");
-  const bad = list.filter((r) => r.status !== "pass");
+  const pass = list.filter((r) => r.status === "pass" && !hasOv(r));   // 直接通過 → 小標籤
+  const bad = list.filter((r) => r.status !== "pass" || hasOv(r));     // 重寫/退回/二審推翻 → 卡片
   return (
     <div className="step-rev">
       {pass.length > 0 && (
@@ -135,15 +145,25 @@ function RevBlock({ list }) {
           {pass.map((r) => <span className="rv-chip" key={r.index}>{label} #{r.index} ✓</span>)}
         </div>
       )}
-      {bad.map((r) => (
-        <div className={"rv " + r.status} key={r.index}>
+      {bad.map((r) => {
+        const cls = isVerified(r) ? "verified" : r.status;
+        return (
+        <div className={"rv " + cls} key={r.index}>
           <div className="rv-top">
             <span className="rv-tag s">{label}</span>
             第 {r.index} 則
-            <span className={"rv-tag " + r.status}>{revTag(r)}</span>
+            <span className={"rv-tag " + cls}>{revTag(r)}</span>
           </div>
+          {(r.overturned || []).map((o, j) => (
+            <div className="ov" key={j}>
+              <div className="ov-claim">一審擋下:<s>{o.claim}</s></div>
+              <div className="ov-ev">📄 二審查到原文確有:「{o.evidence}」</div>
+            </div>
+          ))}
           {r.blocking && r.blocking.length > 0 && (
-            <div className="blk">🔴 擋下:{r.blocking.join("；")}</div>
+            <div className="blk">
+              🔴 擋下{r.type === "script" ? "(二審確認)" : ""}:{r.blocking.join("；")}
+            </div>
           )}
           {r.before && r.after && r.before !== r.after && (
             <div className="ba">
@@ -152,7 +172,8 @@ function RevBlock({ list }) {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
