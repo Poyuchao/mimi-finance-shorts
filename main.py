@@ -54,10 +54,10 @@ def _log(text: str, level: str = "info") -> None:
 
 
 def _review(rtype: str, index: int, status: str, blocking=None,
-            before: str | None = None, after: str | None = None) -> None:
-    # 🆕 UPDATE 15:審稿/審圖結果給控制台「審查流程」面板
+            before: str | None = None, after: str | None = None, overturned=None) -> None:
+    # 🆕 UPDATE 15:審稿/審圖結果給控制台「審查流程」面板(審稿另帶被二審推翻的指控)
     _emit("review", type=rtype, index=index, status=status,
-          blocking=blocking or [], before=before, after=after)
+          blocking=blocking or [], before=before, after=after, overturned=overturned or [])
 
 
 def _step(n: int, msg: str) -> None:
@@ -166,7 +166,7 @@ def run(platform: str = "ig") -> str:
                 _log(f"第 {i} 則審稿不通過 → 已重寫", "warn")
             # 🆕 UPDATE 15:把審稿結果送給控制台「審查流程」面板
             _review("script", i, res["status"], blocking=res["blocking"],
-                    before=res["before"], after=res["after"])
+                    before=res["before"], after=res["after"], overturned=res.get("overturned"))
         print(f"  審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿")
         _log(f"審稿完成:{n_fixed}/{len(llm_result['items'])} 則重寫,其餘原稿", "ok")
 

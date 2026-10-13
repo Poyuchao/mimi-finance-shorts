@@ -43,6 +43,8 @@ _OMIT_PAT = re.compile(r"缺少|應(該)?(有所)?體現|應(包含|納入|提�
 #   但若同時有「明確買賣/進出動作詞」(_ACTION_PAT),代表可能是真的投資建議 → 保留不降。
 _FOCUS_PAT = re.compile(r"焦點|關注|矚目|注目|留意|值得注意|值得關注|點名")
 _ACTION_PAT = re.compile(r"買進|賣出|進場|出場|加碼|減碼|快買|快賣|抄底|套牢|停損|停利|布局|該買|該賣")
+# ★ 除權息時程用語是中性資訊,但「最後買進日」含「買進」會誤中 _ACTION_PAT → 比對前先排除。★
+_NEUTRAL_TERMS = re.compile(r"最後買進日|最後交易日|除息日|除權日|除權息|買進評等")
 
 
 def _build_critic_prompt(source: str, script: str) -> str:
@@ -77,6 +79,7 @@ B2. ★投資建議★:★只擋「明確叫人買賣 / 進出場」的指令★
       - 「成為(市場/大家)關注的焦點」「市場焦點」「受矚目」「點名這幾檔」「值得注意 / 值得關注」
         「多留意市場動態」「投資人觀望」—— 這些只是「指出哪些標的受關注」,★不是叫人買★。
       例:稿說「台積電、科林研發、馬拉松石油成為大家關注的焦點」→ ★這是中性點名,pass,不要當投資建議★。
+      - ★除權息時程(最後買進日、除息日、除權日)屬中性資訊★:稿說「10月16日是最後買進日,可以留意」→ 不算投資建議。
     ★判準:有沒有「明確的買賣/進出動作指令」?沒有 → 就不是投資建議。★
     (本頻道是「回顧重點」,不給投資建議 → 這是紅線,但紅線只畫在「明確買賣指令」)
 B3. ★嚴重誇大 / 斷言★:只擋「**與原文方向相反**,或原文中性/看好卻說成『保證賺、一定大漲、必崩』」這種強烈斷言。
@@ -110,8 +113,93 @@ M1. 真的無傷大雅的小地方(極少用到)。多數情況 minor 應為空�
 }}"""
 
 
+# ── 🆕 二審:逐條覆核一審的擋下理由(審查員也要被審查)──────────────
+# 起因:同一份輸入連審 5 次,4 次通過、1 次誤判 → 單次 LLM 判決在邊界案例不穩定。
+# ★ 二審要推翻一審,必須附原文逐字引文,且程式確認引文真的在原文裡才放行(不靠模型說了算)。★
+_MIN_EVIDENCE_CHARS = 6   # 引文正規化後至少這麼長才採信(避免「台積電」這種太短的巧合命中)
+
+
+def _build_verify_prompt(source: str, script: str, claim: str) -> str:
+    return f"""你是「米米財經」審稿的**二審覆核員**。一審審稿員對下面這份口播稿提出了一條指控,
+請你★只針對這條指控★,對照原文判斷它是否成立。
+
+【原文】
+{source}
+
+【口播稿】
+{script}
+
+【一審指控】
+{claim}
+
+★ 判斷方式 ★
+- 指控說「某數字 / 日期 / 公司 / 事件 原文沒有、屬編造」→ 請在原文中★逐字搜尋★。
+  原文確實有寫(或只是合理四捨五入、同義改寫)→ 指控不成立。
+- 指控說「投資建議」→ 只有「明確叫人買賣 / 進出場」才成立;中性描述、「值得留意」、
+  除權息時程(最後買進日、除息日)→ 不成立。
+- 指控說「誇大斷言 / 離題」→ 對照原文,確實與原文抵觸或無關才成立。
+
+★★ 若判定「不成立」,evidence 必須填原文中支持口播稿的那一句,★逐字複製,不可改寫或摘要★。
+   在原文找不到可以支持的句子,就不能判不成立。★★
+
+只回 JSON(不要其他文字):
+{{"valid": true 或 false, "evidence": "原文逐字引文(判不成立時必填)", "reason": "一句話說明"}}
+valid = true 代表一審指控成立(維持擋下);false 代表不成立(推翻)。"""
+
+
+def _norm(text: str) -> str:
+    """比對引文用:NFKC(全形→半形)後只留文字與數字,避免括號/標點差異造成誤判。"""
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFKC", text or "") if ch.isalnum())
+
+
+def verify_claim(source: str, script: str, claim: str) -> dict:
+    """二審單一指控。回 {"valid", "evidence", "reason"}。"""
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(
+        model=config.SCRIPT_REVIEW_MODEL,
+        temperature=0,
+        model_kwargs={"response_format": {"type": "json_object"}},
+    )
+    resp = llm.invoke(_build_verify_prompt(source, script, claim))
+    data = json.loads(_FENCE.sub("", (resp.content or "").strip()))
+    return {"valid": bool(data.get("valid", True)),
+            "evidence": str(data.get("evidence") or ""),
+            "reason": str(data.get("reason") or "")}
+
+
+def _second_review(source: str, script: str, blocking: list[str]) -> tuple[list[str], list[dict]]:
+    """逐條覆核。回 (維持擋下的, 被推翻的[{claim, evidence, reason}])。
+
+    推翻條件(三者都要):二審判不成立 + 有附引文 + 引文正規化後確實出現在原文。
+    其餘一律維持擋下(含二審本身出錯)→ 寧可多擋,不誤放編造/投資建議。
+    """
+    confirmed, overturned = [], []
+    norm_source = _norm(source)
+    for claim in blocking:
+        try:
+            v = verify_claim(source, script, claim)
+        except Exception as exc:  # noqa: BLE001 — 二審失敗 → 保守維持一審
+            logger.warning("二審失敗,維持一審擋下:%s", exc)
+            confirmed.append(claim)
+            continue
+        ev = _norm(v["evidence"])
+        if (not v["valid"]) and len(ev) >= _MIN_EVIDENCE_CHARS and ev in norm_source:
+            overturned.append({"claim": claim, "evidence": v["evidence"], "reason": v["reason"]})
+            logger.info("二審推翻一審:%s|原文引文:%s", claim, v["evidence"])
+        else:
+            if not v["valid"]:
+                logger.info("二審判不成立但引文對不上原文 → 維持擋下:%s", claim)
+            confirmed.append(claim)
+    return confirmed, overturned
+
+
 def critic(source: str, script: str) -> dict:
-    """審一份稿。回 {"pass", "blocking", "minor"}。pass 只看 blocking。"""
+    """審一份稿。回 {"pass", "blocking", "minor", "overturned"}。pass 只看 blocking。
+
+    流程:一審(LLM)→ 程式防呆網降級 → 二審逐條覆核(SCRIPT_REVIEW_VERIFY 開時)。
+    """
     from langchain_openai import ChatOpenAI
 
     llm = ChatOpenAI(
@@ -130,7 +218,8 @@ def critic(source: str, script: str) -> dict:
     for b in raw_blocking:
         is_style = _STYLE_PAT.search(b) and not _HARD_PAT.search(b)   # 純風格意見
         is_omit = _OMIT_PAT.search(b)                                  # 「嫌稿講得不夠完整」
-        is_focus = _FOCUS_PAT.search(b) and not _ACTION_PAT.search(b)  # 中性點名/值得關注(非買賣指令)
+        is_focus = (_FOCUS_PAT.search(b)                                # 中性點名/值得關注(非買賣指令)
+                    and not _ACTION_PAT.search(_NEUTRAL_TERMS.sub("", b)))  # 先排除「最後買進日」等用語
         if is_style or is_omit or is_focus:
             demoted.append(b)        # 風格 / 要求補內容 / 中性點名 → 都不該擋發片
         else:
@@ -139,7 +228,13 @@ def critic(source: str, script: str) -> dict:
         logger.info("審稿:%d 個非實質違規項被降級(不擋發片):%s", len(demoted), demoted)
         minor += demoted
 
-    return {"pass": not blocking, "blocking": blocking, "minor": minor}
+    # 🆕 二審:一審有擋下才觸發,逐條覆核;被推翻的(附原文引文)降為 minor
+    overturned: list[dict] = []
+    if blocking and getattr(config, "SCRIPT_REVIEW_VERIFY", True):
+        blocking, overturned = _second_review(source, script, blocking)
+        minor += [f"(二審推翻){o['claim']}" for o in overturned]
+
+    return {"pass": not blocking, "blocking": blocking, "minor": minor, "overturned": overturned}
 
 
 def _build_writer_prompt(source: str, script: str, issues: list[str]) -> str:
@@ -214,19 +309,21 @@ def safe_review_and_fix(source: str, draft: str) -> str:
         return draft
 
 
-def _pass_result(draft: str) -> dict:
+def _pass_result(draft: str, overturned: list[dict] | None = None) -> dict:
     return {"script": draft, "changed": False, "status": "pass",
-            "blocking": [], "before": draft, "after": draft}
+            "blocking": [], "before": draft, "after": draft, "overturned": overturned or []}
 
 
 def review_and_fix_verbose(source: str, draft: str) -> dict:
     """🆕 UPDATE 15:同 review_and_fix,但回傳細節給控制台 UI。
 
-    回 {script, changed, status(pass/rewrite/fallback), blocking(當初擋下的理由), before, after}。
+    回 {script, changed, status(pass/rewrite/fallback), blocking(當初擋下的理由), before, after,
+        overturned(被二審推翻的一審指控 + 原文引文)}。
     """
     verdict = critic(source, draft)
+    first_overturned = verdict.get("overturned", [])   # 一審被二審推翻的(給 UI 顯示)
     if verdict["pass"]:
-        return _pass_result(draft)
+        return _pass_result(draft, first_overturned)
 
     first_blocking = verdict["blocking"]        # 當初擋下的理由(給 UI 顯示)
     current = draft
@@ -237,12 +334,14 @@ def review_and_fix_verbose(source: str, draft: str) -> dict:
         if verdict["pass"]:
             logger.info("審稿第 %d 次重寫後通過", attempt)
             return {"script": current, "changed": True, "status": "rewrite",
-                    "blocking": first_blocking, "before": draft, "after": current}
+                    "blocking": first_blocking, "before": draft, "after": current,
+                    "overturned": first_overturned}
 
     logger.warning("★審稿重寫 %d 次仍不過,用最後重寫版發片★ 殘留問題:%s",
                    config.SCRIPT_REVIEW_MAX_RETRY, verdict["blocking"])
     return {"script": current, "changed": True, "status": "fallback",
-            "blocking": first_blocking, "before": draft, "after": current}
+            "blocking": first_blocking, "before": draft, "after": current,
+            "overturned": first_overturned}
 
 
 def safe_review_and_fix_verbose(source: str, draft: str) -> dict:

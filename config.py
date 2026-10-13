@@ -141,6 +141,7 @@ AGENT_RECURSION_LIMIT = 12                             # graph 步數上限(一�
 USE_SCRIPT_REVIEW       = True          # 開關(False = 改寫後直接用,等同 U11 現狀)
 SCRIPT_REVIEW_MODEL     = "gpt-4o"      # 審稿/重寫用的 LLM(4o-mini 對相近大數字會讀錯 → 升級 4o)
 SCRIPT_REVIEW_MAX_RETRY = 1             # 審不過 → 帶問題重寫幾次(再不過 → fail-open 用原稿)
+SCRIPT_REVIEW_VERIFY    = True          # 二審:一審擋下時逐條覆核,推翻須附原文引文且程式確認(False = 只有一審)
 
 # 🆕 UPDATE 14:選中新聞抓全文(RSS 只給殘缺摘要 → 改寫/審稿誤判數字編造)
 USE_FULLTEXT       = True   # False = 退回用 RSS 摘要(等同 U13 現狀)
